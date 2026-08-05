@@ -440,6 +440,211 @@ class NativeRoutingTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
+    def governed_verifier_suffix(self, *, trailing_newline: bool = False) -> str:
+        value = "\n".join(
+            (
+                NATIVE.VERIFIER_SUFFIX_START + " reviewer.",
+                *(
+                    sentinel
+                    for sentinel in NATIVE.VERIFIER_SUFFIX_SENTINELS
+                    if sentinel != "fleet_check"
+                ),
+                NATIVE.VERIFIER_SUFFIX_END,
+            )
+        )
+        return value + ("\n" if trailing_newline else "")
+
+    def realistic_governed_verifier_suffix(self) -> str:
+        return """For post-execution verification, route to the configured independent Claude Verifier using only the frozen artifact packet.
+The Verifier is ARTIFACT_PACKET_ONLY and tool-less. It reports evidence to the owner and is never gate-eligible by itself.
+
+A change to a fleet-manifest component may not settle until
+`fleet_check.py --component` reports every declared surface green. The root retains the component decision and no Verifier result authorizes settlement.
+
+If verification stops, return owner-authorizable options in WHY IT STOPPED / OPTIONS / VERIFIER'S VIEW form. The Verifier cannot retry, settle, merge, deploy, weaken a gate, or override a prior verdict.
+
+One model holds at most one seat per lineage: a model that advised may not verify, and a model that verified may not advise.
+
+Every seat records host- or bridge-generated runtime evidence with its exact runtime identity. Config integrity is incomplete when an orchestration repair or plugin update is incomplete if it drops these Verifier paragraphs."""
+
+    def test_governed_verifier_suffix_recognition_and_failure_matrix(self) -> None:
+        suffix = self.governed_verifier_suffix(trailing_newline=True)
+        self.assertIsNone(NATIVE._governed_verifier_suffix(NATIVE.MISSING))
+        self.assertIsNone(NATIVE._governed_verifier_suffix("ordinary mode"))
+        self.assertEqual(
+            NATIVE._governed_verifier_suffix(
+                NATIVE.MANAGED_MARKER + "\nold prefix\n\n" + suffix
+            ),
+            suffix,
+        )
+
+        real_suffix = self.realistic_governed_verifier_suffix()
+        real_candidate = NATIVE.MANAGED_MARKER + "\nold prefix\n\n" + real_suffix
+        self.assertEqual(NATIVE._governed_verifier_suffix(real_candidate), real_suffix)
+
+        malformed = [
+            None,
+            "unmarked prefix\n\n" + suffix,
+        ]
+        structural = [
+            NATIVE.VERIFIER_SUFFIX_START,
+            NATIVE.VERIFIER_SUFFIX_END,
+            suffix + NATIVE.VERIFIER_SUFFIX_START,
+            suffix + NATIVE.VERIFIER_SUFFIX_END,
+            suffix + "nonterminal",
+            suffix.replace(NATIVE.VERIFIER_SUFFIX_SENTINELS[0] + "\n", "", 1),
+            suffix.replace(
+                NATIVE.VERIFIER_SUFFIX_SENTINELS[1],
+                NATIVE.VERIFIER_SUFFIX_SENTINELS[1]
+                + "\n"
+                + NATIVE.VERIFIER_SUFFIX_SENTINELS[1],
+                1,
+            ),
+        ]
+        malformed.extend(NATIVE.MANAGED_MARKER + "\n" + value for value in structural)
+        partial = "ARTIFACT_PACKET_ONLY\n" + NATIVE.VERIFIER_SUFFIX_SENTINELS[-1]
+        malformed.extend(
+            (
+                NATIVE.MANAGED_MARKER + "\n" + partial,
+                "unmarked\n" + partial,
+            )
+        )
+        for candidate in malformed:
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(NATIVE.ConfigurationError):
+                    NATIVE._governed_verifier_suffix(candidate)
+
+    def test_build_policy_preserves_exact_suffix_at_one_blank_boundary(self) -> None:
+        executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "high"}
+        suffix = self.governed_verifier_suffix(trailing_newline=True)
+        mode, _ = NATIVE.build_policy(
+            executor,
+            None,
+            None,
+            current_mode=NATIVE.MANAGED_MARKER + "\nold prefix\n\n" + suffix,
+        )
+        self.assertTrue(mode.endswith("\n\n" + suffix))
+        self.assertEqual(mode.count(NATIVE.VERIFIER_SUFFIX_START), 1)
+        self.assertEqual(mode.count(suffix), 1)
+
+        fresh, _ = NATIVE.build_policy(executor, None, None)
+        self.assertNotIn(NATIVE.VERIFIER_SUFFIX_START, fresh)
+
+        real_suffix = self.realistic_governed_verifier_suffix()
+        real_mode, _ = NATIVE.build_policy(
+            executor,
+            None,
+            None,
+            current_mode=NATIVE.MANAGED_MARKER + "\nold\n\n" + real_suffix,
+        )
+        self.assertTrue(real_mode.endswith("\n\n" + real_suffix))
+
+    def test_suffix_byte_identity_is_part_of_the_generated_mode_receipt(self) -> None:
+        executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "high"}
+        first_suffix = self.realistic_governed_verifier_suffix()
+        second_suffix = first_suffix.replace("frozen artifact", "frozen  artifact", 1)
+        first_mode, _ = NATIVE.build_policy(
+            executor,
+            None,
+            None,
+            current_mode=NATIVE.MANAGED_MARKER + "\nold\n\n" + first_suffix,
+        )
+        second_mode, _ = NATIVE.build_policy(
+            executor,
+            None,
+            None,
+            current_mode=NATIVE.MANAGED_MARKER + "\nold\n\n" + second_suffix,
+        )
+        self.assertTrue(first_mode.endswith(first_suffix))
+        self.assertTrue(second_mode.endswith(second_suffix))
+        self.assertNotEqual(first_suffix, second_suffix)
+        self.assertNotEqual(first_mode, second_mode)
+
+    def test_setup_update_state_repair_and_disable_preserve_exact_suffix(self) -> None:
+        suffix = self.governed_verifier_suffix(trailing_newline=True)
+        initial = {
+            "features": {
+                "multi_agent_v2": {
+                    "multi_agent_mode_hint_text": (
+                        NATIVE.MANAGED_MARKER + "\nold managed prefix\n\n" + suffix
+                    ),
+                    "usage_hint_text": "user usage",
+                }
+            },
+            "keep": "exact",
+        }
+        config_path = self.home / ".fake-user-config.json"
+        config_path.write_text(json.dumps(initial), encoding="utf-8")
+
+        self.run_script(
+            "--executor-model",
+            "gpt-5.6-luna",
+            "--replace-existing-policy",
+            "--apply",
+        )
+        installed = self.read_fake_config()["features"]["multi_agent_v2"]
+        self.assertTrue(installed["multi_agent_mode_hint_text"].endswith(suffix))
+        state_path = self.home / NATIVE.STATE_FILENAME
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            state["managed"]["mode"], installed["multi_agent_mode_hint_text"]
+        )
+
+        self.run_script("--executor-model", "gpt-5.6-terra", "--apply")
+        updated = self.read_fake_config()["features"]["multi_agent_v2"]
+        self.assertTrue(updated["multi_agent_mode_hint_text"].endswith(suffix))
+        updated_state = json.loads(state_path.read_text(encoding="utf-8"))
+        expected_mode = updated_state["managed"]["mode"]
+        self.assertEqual(expected_mode, updated["multi_agent_mode_hint_text"])
+
+        full_config = self.read_fake_config()
+        full_config["features"]["multi_agent_v2"]["multi_agent_mode_hint_text"] = (
+            f"{NATIVE.MANAGED_MARKER}\ndrifted"
+        )
+        config_path.write_text(json.dumps(full_config), encoding="utf-8")
+        self.run_script("--repair", "--apply")
+        repaired = self.read_fake_config()["features"]["multi_agent_v2"]
+        self.assertEqual(repaired["multi_agent_mode_hint_text"], expected_mode)
+        self.assertTrue(repaired["multi_agent_mode_hint_text"].endswith(suffix))
+
+        self.run_script("--disable", "--apply")
+        disabled = self.read_fake_config()
+        disabled_feature = disabled["features"]["multi_agent_v2"]
+        self.assertNotIn("multi_agent_mode_hint_text", disabled_feature)
+        self.assertEqual(disabled_feature["usage_hint_text"], "user usage")
+        self.assertEqual(disabled["keep"], "exact")
+
+    def test_malformed_governed_suffix_fails_before_config_write(self) -> None:
+        suffix = self.governed_verifier_suffix()
+        managed_malformed = (NATIVE.MANAGED_MARKER + "\n" + suffix).replace(
+            NATIVE.VERIFIER_SUFFIX_SENTINELS[0] + "\n", "", 1
+        )
+        candidates = ("unmarked\n\n" + suffix, managed_malformed)
+        config_path = self.home / ".fake-user-config.json"
+        for candidate in candidates:
+            initial = {
+                "features": {
+                    "multi_agent_v2": {
+                        "multi_agent_mode_hint_text": candidate,
+                        "usage_hint_text": "user usage",
+                    }
+                }
+            }
+            before = json.dumps(initial)
+            config_path.write_text(before, encoding="utf-8")
+            result = self.run_script(
+                "--executor-model",
+                "gpt-5.6-luna",
+                "--replace-existing-policy",
+                "--apply",
+                check=False,
+            )
+            with self.subTest(candidate=candidate):
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("Verifier suffix", result.stderr)
+                self.assertEqual(config_path.read_text(encoding="utf-8"), before)
+                self.assertFalse((self.home / NATIVE.STATE_FILENAME).exists())
+
     def test_policy_keeps_root_authority_and_pins_fork_none(self) -> None:
         executor = {"kind": "model", "model": "gpt-5.6-luna", "effort": "xhigh"}
         planner = {"kind": "model", "model": "gpt-5.6-sol", "effort": "high"}
@@ -452,24 +657,30 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("never spawn descendants", mode)
         self.assertIn("Explicit user instructions win", mode)
         self.assertIn("Persistent and task-local Planner and Advisor routes", mode)
-        self.assertEqual(NATIVE.ADVISOR_REVIEW_LIMIT, 8)
-        self.assertIn("at most eight total Advisor reviews", mode)
+        self.assertEqual(NATIVE.ADVISOR_REVIEW_LIMIT, 5)
+        self.assertIn("at most five total Advisor reviews", mode)
         self.assertIn("PLAN_APPROVED ends review early", mode)
-        self.assertIn("rounds two through eight", mode)
+        self.assertIn("rounds two through five", mode)
         self.assertIn(
             "current plan and version plus a compact cumulative ledger, not prior transcripts",
             mode,
         )
-        self.assertIn("round-eight PLAN_REVISE halts before Executor", mode)
+        self.assertIn("round-five PLAN_REVISE halts before Executor", mode)
         self.assertIn("non-approval artifact", mode)
         self.assertIn("NOT_ADVISOR_APPROVED", mode)
         self.assertIn("Planner failure permits the root to take over", mode)
         self.assertIn("stale plan version", mode)
         self.assertIn("invalid or incomplete ledger", mode)
-        stale_limit_word = "fi" + "ve"
-        self.assertNotIn(f"{stale_limit_word} total Advisor reviews", mode)
-        self.assertNotIn(f"round-{stale_limit_word} PLAN_REVISE", mode)
-        self.assertNotIn(f"rounds two through {stale_limit_word}", mode)
+        for unsupported_limit_word in ("six", "seven", "eight"):
+            self.assertNotIn(
+                f"{unsupported_limit_word} total Advisor reviews", mode
+            )
+            self.assertNotIn(
+                f"round-{unsupported_limit_word} PLAN_REVISE", mode
+            )
+            self.assertNotIn(
+                f"rounds two through {unsupported_limit_word}", mode
+            )
         self.assertIn("There is no Finalizer seat", mode)
         self.assertIn("configured Designer", mode)
         self.assertIn("design artifacts", mode)
@@ -508,19 +719,19 @@ class NativeRoutingTests(unittest.TestCase):
         planner = {"kind": "model", "model": "gpt-5.6-sol", "effort": "high"}
         advisor = {"kind": "model", "model": "gpt-5.6-terra", "effort": "high"}
 
-        with mock.patch.object(NATIVE, "ADVISOR_REVIEW_LIMIT", 7):
+        with mock.patch.object(NATIVE, "ADVISOR_REVIEW_LIMIT", 4):
             mode, _ = NATIVE.build_policy(executor, planner, advisor)
 
         for expected in (
-            "at most seven total Advisor reviews",
-            "rounds two through seven",
-            "round-seven PLAN_REVISE",
+            "at most four total Advisor reviews",
+            "rounds two through four",
+            "round-four PLAN_REVISE",
         ):
             self.assertIn(expected, mode)
         for hard_coded in (
-            "at most eight total Advisor reviews",
-            "rounds two through eight",
-            "round-eight PLAN_REVISE",
+            "at most five total Advisor reviews",
+            "rounds two through five",
+            "round-five PLAN_REVISE",
         ):
             self.assertNotIn(hard_coded, mode)
 

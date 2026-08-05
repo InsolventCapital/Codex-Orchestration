@@ -13,6 +13,34 @@ Codex Orchestration adds four simple roles to a Codex task:
 
 The model selected for the Codex task remains in charge. It passes work between the roles, checks every result, and gives you the final answer.
 
+## Explicit continuation classification
+
+Version 0.9.5 includes an opt-in, read-only classifier for future scanner adapters.
+It accepts only caller-supplied absolute paths to a strict machine-event JSONL file
+and a strict authority-context JSON file:
+
+```bash
+python3 <skill-dir>/scripts/continuation_router.py \
+  --input /absolute/path/to/events.jsonl \
+  --context /absolute/path/to/context.json
+```
+
+The classifier emits one deterministic JSON object. It does not find sessions,
+follow references, infer environment state or freshness, wake tasks, invoke models,
+write evidence, or execute the reported action. Message records are validated as
+bounded opaque strings and discarded; their content cannot become a routing event.
+Verifier events are evidence only. They never settle a DIRECT action or authorize a
+FULL action. The current root owns freshness, recording, seat selection, all action,
+and the explicit owner gate.
+
+No scanner adapter, discovery, or wakeup mechanism is included. Any future scanner
+requires its own pinned and reviewed implementation and event format. Non-verified
+STOP options are non-authoritative choices for the owner, never permission to retry
+or act. During future setup or seat updates, an already managed, complete governed
+Verifier suffix is preserved byte-for-byte; malformed, unmarked, or ambiguous suffixes fail closed.
+Repair restores the exact saved managed mode bytes. This source release does not
+change any installed configuration by itself.
+
 ## How it works
 
 ```text
@@ -49,7 +77,7 @@ The model selected for the Codex task remains in charge. It passes work between 
                     CODEX TESTS & DELIVERS
 ```
 
-Planner and Advisor can work through several revisions. Codex stops as soon as the Advisor returns `PLAN_APPROVED`, with a safety limit of eight reviews. If approval is not reached, execution stops and Codex shows you the latest plan and unresolved issues.
+Planner and Advisor can work through several revisions. Codex stops as soon as the Advisor returns `PLAN_APPROVED`, with a safety limit of five reviews. If approval is not reached, execution stops and Codex shows you the latest plan and unresolved issues.
 
 ## Why use it?
 
@@ -315,7 +343,8 @@ or newer** adds `--update`, routing repair, and Designer; version **0.7.1 or new
 lets the natural `Designer: Kimi K3` label enter the External Model lifecycle;
 version **0.7.2 or newer** uses the concise per-role activation confirmation;
 version **0.8.0 or newer** uses sealed direct CLI invocation for READY External
-Model roles; version **0.9.0 or newer** adds Claude Opus 5 subscription routing.
+Model roles; version **0.9.0 or newer** adds Claude Opus 5 subscription routing;
+version **0.9.4 or newer** adds the explicit-input continuation classifier.
 Confirm with
 `codex plugin list --json`, then restart Codex Desktop and start a new task.
 

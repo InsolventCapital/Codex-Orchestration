@@ -1,6 +1,29 @@
 # Changelog
 
-## 0.9.3 — Unreleased
+## 0.9.5 — Unreleased
+
+- Restore the bounded Advisor approval loop to at most five reviews, with a
+  round-five `PLAN_REVISE` halting before Executor work.
+
+## 0.9.4 — Unreleased
+
+- Add an opt-in, source-only continuation router that reads only explicit absolute
+  JSONL and context paths, strictly extracts machine events, and emits a pure,
+  deterministic root-owned classification without discovering sessions, invoking
+  model seats, authorizing actions, or performing writes.
+- Harden the continuation boundary against duplicate JSON keys, transcript prompt
+  injection, resource exhaustion, symlink and special-file input, file replacement
+  and mutation races, control-character output injection, hash substitution, and
+  misleading verifier or exit-code semantics.
+- Deep-freeze normalized continuation state, provide byte-exact non-verified STOP
+  templates, and reject unsafe Unicode output controls while allowing printable
+  Unicode. Scanner discovery and task wakeup remain out of scope and require a
+  separately pinned and reviewed adapter and format.
+- Preserve one existing managed, complete governed Verifier suffix byte-for-byte through
+  native setup, seat update, saved-state binding, and repair; fail closed on
+  ambiguous suffixes. This source change does not mutate installed configuration.
+
+## 0.9.3 — 2026-08-04
 
 - Raise the bounded Advisor approval loop from five to eight reviews while
   preserving immediate approval exit and fail-closed plan, ledger, and

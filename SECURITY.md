@@ -17,6 +17,52 @@ Do not include credentials, tokens, or private configuration. You should receive
 
 ## Security boundaries
 
+The opt-in continuation router is a source-only, read-only classification boundary.
+It requires explicit absolute `--input` JSONL and `--context` JSON paths and never
+discovers chat or session storage, follows event references, consults environment
+state, uses the network or subprocesses, invokes model seats, wakes tasks, or writes
+records. Message text from user, assistant, and tool roles is bounded opaque data:
+it is validated and discarded, never parsed or searched for control instructions.
+Strict duplicate-key rejection applies at every JSON level so a producer and the
+router cannot interpret competing values differently.
+
+Both files are bounded and opened read-only through one close-on-exec descriptor.
+The router rejects symlinks, directories and special files, uses no-follow where the
+platform provides it, compares path and descriptor identity, and checks byte count
+and descriptor metadata before and after the bounded read. On platforms without
+no-follow support, pre/post path checks and descriptor identity are mandatory. Any
+unresolved TOCTOU race, replacement, growth, truncation, excessive JSONL lines,
+oversized line or file, excessive nesting or strings, event overflow, or recorded
+hash-list overflow fails closed without partial normalized state.
+
+Identifiers, authority-context strings, and `intended_action` reject control
+characters, preventing terminal or owner-request line injection. Exact lowercase
+SHA-256 values bind verification to the explicit packet and manifest. Chronological
+event order is consistency evidence, not a freshness claim; freshness remains the
+root's responsibility. Replay is limited by the caller-supplied, sorted recorded
+drift-hash set and is not inferred from chats or ambient state. A Verifier result is
+evidence only: DIRECT classification can close evidence only after supervised
+settlement already occurred, while FULL classification can only format a
+non-authoritative owner request. Non-verification, unavailable or semantically
+malformed results stop and never recommend retrying, reusing, or bypassing a
+consumed Verifier.
+
+Exit `0` means the input was validly classified and can still carry action `STOP`;
+it never means approval or successful execution. Exit `2` is invocation failure,
+`3` rejects unsafe or malformed input, `4` reports bounds or unstable reads, and
+`5` contains unexpected faults. Exit `1` is intentionally unused. Callers must
+inspect the JSON action on exit `0` and must not translate any exit status into
+authorization.
+
+This release includes no scanner adapter, session discovery, or task wakeup. A
+future scanner and its machine-event format require separate pinning and review.
+The options emitted for non-verified results are non-authoritative owner choices.
+Native setup and seat update preserve only one already managed, complete, terminal,
+sentinel-valid governed Verifier suffix byte-for-byte; they reject unmarked,
+missing, duplicated, ambiguous, or nonterminal suffix structure before configuration writes. Repair restores the
+full exact managed mode already saved in ordinary routing state. No separate suffix
+hash or schema is inferred, and source installation alone changes no configuration.
+
 Codex-Orchestration changes only documented routing fields, explicitly prepared
 `model_providers.<id>` tables, plugin-managed personal agent files, and strict
 non-secret state under `CODEX_HOME`. External setup never writes top-level `model`

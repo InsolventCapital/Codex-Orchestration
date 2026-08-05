@@ -612,15 +612,15 @@ Advisor is optional. If none is configured, the root validates the Planner's dra
 4. For `PLAN_REVISE`, assign stable IDs to material findings and send the canonical current version, latest critique, and compact cumulative findings ledger back to the same Planner route. If Planner is omitted, the root revises.
 5. Require `PLAN_REVISION`, a complete `FINDINGS_LEDGER`, and the revised plan. Every latest finding must be `INCORPORATED` or `REJECTED` with a concrete reason. Reject stale source versions, missing or duplicated findings, and empty rationales.
 6. Increment the version and send the new current plan plus compact ledger to a fresh Advisor call. Ask it to confirm or contest prior dispositions rather than repeat accepted findings.
-7. Stop early on approval. Never exceed eight total Advisor reviews.
+7. Stop early on approval. Never exceed five total Advisor reviews.
 
 Carry only the original constraints, current plan, and compact ledger between fresh calls; do not duplicate complete transcripts. The root owns the canonical plan, versions, ledger, round count, semantic validation, and Executor release. Planner and Advisor never contact one another directly.
 
-If review eight still returns `PLAN_REVISE`, halt before Executor work. Give the user the latest plan and version, complete ledger, latest unresolved findings, and choices to override, re-scope, or change a route. Never label it approved.
+If review five still returns `PLAN_REVISE`, halt before Executor work. Give the user the latest plan and version, complete ledger, latest unresolved findings, and choices to override, re-scope, or change a route. Never label it approved.
 
 A configured Planner or Advisor is required by default. Route failure, malformed output, missing context, stale version, or invalid ledger halts before Executor work. Only an explicit current-task best-effort instruction permits degradation:
 
-- if the configured Planner fails, disclose it and let the root assume Planner duties for the remaining rounds without resetting the eight-review budget;
+- if the configured Planner fails, disclose it and let the root assume Planner duties for the remaining rounds without resetting the five-review budget;
 - if the Advisor fails, disclose it, end the loop, and label the latest validated plan `NOT_ADVISOR_APPROVED` before any allowed continuation.
 
 Do not persist a best-effort flag. An explicit task override applies only to that task.
@@ -694,9 +694,37 @@ The “about 65%” example is a model-weighted credit calculation: at the publi
 
 Never call that 65% fewer raw tokens, a guaranteed five-hour or weekly-limit saving, a fixed monetary saving, or five times more completed work. Advisor calls, duplicated context, retries, tools, Fast service tier, and unnecessary workers can reduce or erase the benefit.
 
+## Opt-in continuation classifier
+
+`scripts/continuation_router.py` is a read-only classifier intended for explicit
+future scanner-adapter snapshots. Invoke it only with caller-selected absolute
+paths; it has no defaults, discovery, session-ID resolution, or reference following:
+
+```bash
+python3 <skill-dir>/scripts/continuation_router.py \
+  --input /absolute/path/to/events.jsonl \
+  --context /absolute/path/to/context.json
+```
+
+Treat its sorted-key JSON as classification data, not an action. The current root
+owns freshness, validates the authority basis, selects and invokes any configured
+seat, records any exact qualifying drift hash, and performs or declines every
+continuation. The router never autoauthorizes: Verifier events are evidence only;
+DIRECT can close evidence only for an already supervised settlement, and FULL can
+only emit a non-authoritative owner-gate request. Never infer approval from exit
+code `0`, which also covers a valid `STOP` classification.
+
+This payload does not include a scanner adapter, discovery, or task wakeup. Any
+future scanner and event format must be separately pinned and reviewed. Treat every
+option emitted for a non-verified STOP as non-authoritative. On setup or seat
+update, preserve one already managed, complete governed Verifier suffix
+byte-for-byte and fail closed on unmarked or ambiguous input; repair restores the exact saved managed mode. Do not
+claim that this source work changed installed configuration.
+
 ## Resources
 
 - `scripts/configure_native_routing.py`: one-time native setup, status, seat changes, and disable.
+- `scripts/continuation_router.py`: explicit-input machine-event extraction and pure continuation classification.
 - `scripts/fable_advisor_mcp.py`: fail-closed Fable 5 and Opus 5 planning and review bridge; the filename is retained for compatibility.
 - `scripts/configure_orchestration.py`: namespaced custom agents, provider pins, safe removal, and legacy migration.
 - `scripts/inspect_models.py`: fallible host-catalog diagnostics.

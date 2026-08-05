@@ -43,7 +43,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
 
 POLICY_VERSION = 5
 STATE_SCHEMA = 5
-ADVISOR_REVIEW_LIMIT = 8
+ADVISOR_REVIEW_LIMIT = 5
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
 PLUGIN_ID = "codex-orchestration@codex-orchestration"
@@ -69,6 +69,21 @@ CUSTOM_AGENT_MANAGED_MARKER = (
     "# Managed by codex-orchestration. Standalone custom agent v2."
 )
 MISSING = object()
+VERIFIER_SUFFIX_START = (
+    "For post-execution verification, route to the configured independent Claude"
+)
+VERIFIER_SUFFIX_END = "Verifier paragraphs."
+VERIFIER_SUFFIX_SENTINELS = (
+    "ARTIFACT_PACKET_ONLY",
+    "tool-less",
+    "never gate-eligible by itself",
+    "fleet_check",
+    "`fleet_check.py --component` reports every declared surface green",
+    "WHY IT STOPPED / OPTIONS / VERIFIER'S VIEW",
+    "One model holds at most one seat per lineage",
+    "host- or bridge-generated runtime evidence",
+    "repair or plugin update is incomplete if it drops",
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -457,7 +472,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.3",
+                        "version": "0.9.5",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
@@ -1120,12 +1135,56 @@ def _spawn_route(route: dict[str, Any]) -> str:
     )
 
 
+def _governed_verifier_suffix(candidate: Any) -> str | None:
+    """Return one exact terminal governed-Verifier suffix or fail closed."""
+
+    if candidate is MISSING:
+        return None
+    if not isinstance(candidate, str):
+        raise ConfigurationError(
+            "Existing mode hint must be a string before Verifier preservation."
+        )
+    start_count = candidate.count(VERIFIER_SUFFIX_START)
+    end_count = candidate.count(VERIFIER_SUFFIX_END)
+    if start_count == 0 and end_count == 0:
+        if any(sentinel in candidate for sentinel in VERIFIER_SUFFIX_SENTINELS):
+            raise ConfigurationError(
+                "Existing mode hint contains a boundary-less partial governed "
+                "Verifier suffix."
+            )
+        return None
+    if not candidate.startswith(MANAGED_MARKER):
+        raise ConfigurationError(
+            "An unmarked mode hint cannot supply a governed Verifier suffix."
+        )
+    if start_count != 1 or end_count != 1:
+        raise ConfigurationError(
+            "Existing governed Verifier suffix has missing or duplicate boundaries."
+        )
+    suffix = candidate[candidate.index(VERIFIER_SUFFIX_START) :]
+    if not (
+        suffix.endswith(VERIFIER_SUFFIX_END)
+        or suffix.endswith(VERIFIER_SUFFIX_END + "\n")
+    ):
+        raise ConfigurationError(
+            "Existing governed Verifier suffix is not terminal or is ambiguous."
+        )
+    for sentinel in VERIFIER_SUFFIX_SENTINELS:
+        if suffix.count(sentinel) != 1:
+            raise ConfigurationError(
+                "Existing governed Verifier suffix has missing or duplicate sentinels."
+            )
+    return suffix
+
+
 def build_policy(
     executor: dict[str, Any],
     planner: dict[str, Any] | None,
     advisor: dict[str, Any] | None,
     designer: dict[str, Any] | None = None,
+    current_mode: Any = MISSING,
 ) -> tuple[str, str]:
+    verifier_suffix = _governed_verifier_suffix(current_mode)
     advisor_review_limit = (
         "zero",
         "one",
@@ -1278,6 +1337,8 @@ Never use fork_turns = "all" with model, reasoning_effort, or agent_type: a full
 
 If you are a spawned child, do not call this tool or create descendants. Finish only your assigned packet and return to the root.
 """
+    if verifier_suffix is not None:
+        mode = mode.rstrip("\n") + "\n\n" + verifier_suffix
     return mode, usage
 
 
@@ -2369,7 +2430,13 @@ def main() -> int:
                 planner,
                 advisor,
             )
-            mode, usage = build_policy(executor, planner, advisor, designer)
+            mode, usage = build_policy(
+                executor,
+                planner,
+                advisor,
+                designer,
+                _current_values(config)["mode"],
+            )
             new_state, edits, rollback = _prepare_setup_state(
                 config,
                 state,
