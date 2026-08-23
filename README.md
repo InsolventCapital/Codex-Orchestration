@@ -9,9 +9,15 @@ Codex Orchestration adds four simple roles to a Codex task:
 - **Planner** creates the plan and improves it after feedback. It is optional; when omitted, your current Codex model plans.
 - **Advisor** reviews the plan, finds important gaps, and approves it when it is ready. It is optional.
 - **Designer** turns approved requirements into a bounded visual, UX, interaction, information-architecture, or design-system handoff. It is optional.
-- **Executor** implements the approved plan. It is required for setup.
+- **Executor** implements the approved plan as a direct child of the current Codex
+  root. It is required for setup and never delegates to another worker.
 
 The model selected for the Codex task remains in charge. It passes work between the roles, checks every result, and gives you the final answer.
+
+The configured Executor is always a direct child of the root. Setup selects one such
+route. A separately installed custom role is not selected merely because its file
+exists; select that exact role as Executor if you want the root to route implementation
+work to it.
 
 ## Explicit continuation classification
 
@@ -84,10 +90,13 @@ Planner and Advisor can work through several revisions. Codex stops as soon as t
 - Bring Fable 5, Opus 5, or another compatible model into Codex.
 - Use different models for planning, review, design, and implementation.
 - Get a stronger plan before code changes begin.
-- Run independent implementation work in parallel—up to 2x faster on suitable tasks.
-- Move repeatable work away from the root model and potentially hit premium-model limits about 40% less often.
+- Run independent implementation work in parallel when the slices are genuinely
+  independent.
+- Move eligible repeatable work to a more efficient configured Executor while
+  measuring which route actually ran.
 
-Results depend on the models, task, context, retries, and available parallel work. The speed and limit figures are targets, not guarantees.
+Results depend on the models, task, context, retries, and available parallel work.
+No savings or quality claim follows from configuration alone.
 
 ## Install
 
@@ -152,6 +161,10 @@ $codex-orchestration:codex-orchestration setup planner: <model and effort>, advi
 - Planner and Advisor must use different configured model routes so the review is independent.
 
 Role labels are literal. A model after `planner:` plans; a model after `advisor:` reviews; a model after `designer:` designs; a model after `executor:` implements. Codex must never move a model to a different role because that model was used differently in an older plugin version. If you omit Designer, the workflow has no Designer. If you specify Planner and Executor but omit Advisor, the workflow has no Advisor.
+
+Only the root creates Executor children. Do not configure an Executor with the
+expectation that it will hand work to another model; choose the intended implementation
+model as the Executor instead.
 
 When every requested route is ready in the current task, the plugin confirms only
 the roles you supplied, in your order:
@@ -248,6 +261,8 @@ $codex-orchestration:codex-orchestration create project role: researcher
 
 Project roles live in `.codex/agents/`; personal roles live in
 `~/.codex/agents/`. An unbundled cross-provider model still requires an existing authenticated, compatible provider. Fable 5 and Opus 5 are the bundled cross-provider exceptions.
+Custom-role registration remains a user-governed action outside the plugin's automatic
+routing lifecycle.
 
 ## Use it with Codex Goals
 
@@ -268,6 +283,13 @@ $codex-orchestration:codex-orchestration setup advisor: Claude Opus 5 XHigh, exe
 $codex-orchestration:codex-orchestration Planner: Claude Fable 5 High, Designer: Kimi K3
 $codex-orchestration:codex-orchestration disable
 ```
+
+`status` reports configuration, compatibility, and policy effectiveness. It reports
+live route use as unmeasured because it neither scans saved chats or sessions nor
+invokes a model. When you explicitly ask to use, inspect, or evaluate routing—or when
+the root attempts a non-root route—the task closes with a compact current-task receipt:
+configured/requested route, attempt count, evidence level, and outcome. Route acceptance
+is not runtime identity or task success, and Codex never spawns merely to fill a receipt.
 
 `Designer: Kimi K3` selects the audited task-local External Model role without
 adding Kimi to the Desktop picker or replacing any GPT route. Kimi K3 supports only
@@ -298,6 +320,8 @@ authentication, credentials, chats, or sessions.
 ## Important limits
 
 - Codex remains the root orchestrator and final authority.
+- The configured Executor is always root-direct; Executors never create workers or
+  descendants.
 - Planner, Advisor, and Designer report only to Codex; they do not contact one another or Executors directly.
 - Designer may edit only design artifacts explicitly delegated by Codex; it does not change implementation code or release Executor.
 - The workflow reserves bundled Claude planning tools for the root Codex model by policy. Current MCP calls do not identify their caller, so this caller boundary is instruction-enforced; the bridge itself still disables tools, edits, and session persistence.

@@ -173,6 +173,25 @@ Executor — GPT-5.6 Sol high: Activated
         self.assertIn("Keep simple, tightly coupled", SKILL)
         self.assertIn("explicit `no subagents` instruction always wins", SKILL)
 
+    def test_executor_is_root_direct_and_route_receipts_are_truthful(self) -> None:
+        for content in (SKILL, README, NATIVE_SCRIPT):
+            with self.subTest(source=id(content)):
+                self.assertIn("Executor is always a direct child of the root", content)
+                self.assertIn("separately installed custom role is not selected", content)
+        self.assertIn("Only the root creates\nExecutor children", SKILL)
+        self.assertIn("Never ask an Executor child to create another worker", NATIVE_SCRIPT)
+        self.assertIn("## Current-task route receipt", SKILL)
+        self.assertIn("configured but not used", SKILL)
+        self.assertIn("number of attempts observed in the current task", SKILL)
+        self.assertIn("route acceptance is not task success", SKILL)
+        self.assertIn("mechanical runtime metadata", SKILL)
+        self.assertIn("Never scan saved chats or sessions", SKILL)
+        self.assertIn("spawn solely to populate a receipt", SKILL)
+        self.assertIn("Live route use: unmeasured", NATIVE_SCRIPT)
+        self.assertIn("No savings or quality claim follows from configuration alone", README)
+        self.assertNotIn("up to 2x faster", README)
+        self.assertNotIn("premium-model limits about 40% less often", README)
+
     def test_native_policy_manages_only_required_fields(self) -> None:
         for field in (
             "hide_spawn_agent_metadata",

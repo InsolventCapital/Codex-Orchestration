@@ -472,7 +472,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.5",
+                        "version": "0.9.6",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
@@ -1265,7 +1265,9 @@ The root owns the plan version, cumulative findings ledger, review count, valida
 
 On PLAN_REVISE, record the latest finding IDs before revision. After the Planner returns, validate and merge each INCORPORATED or reasoned REJECTED disposition into the cumulative ledger before another Advisor call. A round-{advisor_review_limit} PLAN_REVISE halts before Executor and produces a non-approval artifact containing the latest plan and version, full ledger, latest findings, and choices available to the user. It must not claim approval. Any required Planner or Advisor route failure also halts before Executor. Only an explicit current-task best-effort instruction changes failure handling: Planner failure permits the root to take over planning for the remaining rounds; Advisor failure may proceed only with the result labeled NOT_ADVISOR_APPROVED. No best-effort setting is persisted.
 
-When executor delegation materially improves speed, cost, quality, or context isolation, use only the configured executor route. Give each executor one bounded, self-contained packet with objective, relevant facts, constraints, owned files or read-only scope, dependencies, acceptance criteria, verification, and handoff format. Inspect every handoff, integrate it, and run final checks yourself.
+When executor delegation materially improves speed, cost, quality, or context isolation, use only the configured executor route. The configured Executor is always a direct child of the root, and only the root creates Executor children. An Executor never delegates to another worker or spawns a descendant. A separately installed custom role is not selected merely because its file exists. Give each executor one bounded, self-contained packet with objective, relevant facts, constraints, owned files or read-only scope, dependencies, acceptance criteria, verification, and handoff format. Inspect every handoff, integrate it, and run final checks yourself.
+
+At task close, include a compact route-use receipt only when the user explicitly asked to use, inspect, or evaluate routing, or when the root attempted at least one non-root route in this task. For each relevant route, state the configured or requested route, current-task attempt count, evidence state, and outcome. Use configured but not used only for zero attempts and give a reason. Route accepted means exact controls were accepted; used and confirmed requires mechanical runtime model, provider, and effort metadata. Record outcome separately because route acceptance is not task success. Never scan saved chats or sessions, infer identity from child prose, or spawn solely to populate a receipt.
 
 Explicit user instructions win, including no-subagents and task-local seat overrides. Persistent and task-local Planner and Advisor routes must remain distinct: reject the same direct model ID, the same custom-agent name, or more than one bundled Claude subscription seat. This policy does not create or change a Goal, weaken approvals, alter permissions, or force a worker count.
 
@@ -1323,7 +1325,7 @@ Planner and Advisor are policy-isolated, root-directed seats: they cannot contac
     usage = f"""{MANAGED_MARKER}
 If you are the root task model, you are the orchestrator. Apply these routes only to children you decide to create.
 
-For delegated executor work, call this tool with {_spawn_route(executor)}, fork_turns = "none". Send a self-contained task packet.
+For delegated executor work, the root calls this tool directly with {_spawn_route(executor)}, fork_turns = "none". Send a self-contained task packet. Never ask an Executor child to create another worker.
 
 {planner_hint}
 
@@ -1664,6 +1666,10 @@ def _status(
         print(
             "Routing validation: not performed — config compatibility and policy "
             "effectiveness do not prove route acceptance or the effective child model"
+        )
+        print(
+            "Live route use: unmeasured — status does not inspect saved chats or "
+            "sessions and does not invoke models"
         )
         healthy = (
             clients_compatible

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.6 — Unreleased
+
+- Make the configured Executor explicitly root-direct: only the root creates
+  Executor children, Executors never delegate to descendants, and a separately
+  installed custom role is not selected merely because its file exists.
+- Add current-task route-use receipts for routing requests and attempted non-root
+  calls, separating zero use, route acceptance, mechanically confirmed runtime
+  identity, and task outcome without scanning saved chats or sessions.
+- Make native status report live utilization as unmeasured and remove unsupported
+  numerical speed and usage-limit targets from the README; configuration alone is
+  not savings or quality evidence.
+
 ## 0.9.5 — Unreleased
 
 - Restore the bounded Advisor approval loop to at most five reviews, with a

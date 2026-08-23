@@ -410,6 +410,9 @@ python3 <skill-dir>/scripts/configure_native_routing.py \
 
 Run status from the target project. The first form is descriptive. Use `--require-effective` for automation and release gates; it returns nonzero for incompatible clients, conflicts, overrides, incomplete controls, an unavailable bundled Claude or custom-agent route, or orphaned v0.4+ personal roles. Report the current task model as the orchestrator, Planner (`root` when omitted), configured Advisor, Designer, and Executor, whether the personal policy is installed and effective in that workspace, whether effective spawn controls are visible, whether the effective tool namespace is `agents`, the target config path, and checked-client compatibility. State that neither status form proves a live route or infers v2 activation for the model selected in a task; current Sol or Terra is the intended root.
 
+Report live route use as `unmeasured` because status neither inspects saved chats or
+sessions nor invokes a model.
+
 When status reports `managed fields conflict with local restore state`, do not run
 setup or disable over the conflict and do not assume authentication failed. A literal
 `repair` request makes the valid saved plugin state authoritative only for the
@@ -571,6 +574,16 @@ This skill and its saved policy must never:
 
 An explicit `no subagents` instruction always wins. A current-task seat override wins over the saved default for that task only.
 
+### Executor topology
+
+The configured Executor is always a direct child of the root. Only the root creates
+Executor children; an Executor never delegates to another worker or spawns a
+descendant. If another model should perform bounded implementation work, select it as
+the configured Executor or have the user supply it as an explicit task-local Executor
+route that the root invokes. A separately installed custom role is not selected merely
+because its file exists, and the plugin must never auto-discover or auto-promote one
+into the saved preset.
+
 ## Spawn routed children correctly
 
 Inspect the callable subagent interface. A saved current preset should expose the routed tool under `agents`; if only `collaboration` is exposed, do not assume the expanded direct route works. For a task-local fallback, use whichever callable namespace is actually present and pass exact route controls only when its schema exposes them.
@@ -653,6 +666,9 @@ its purpose; the Planner/Advisor route-separation rule remains unchanged.
 
 ## Executor handoff
 
+Only the root creates an Executor child. Never ask an Executor to hand work to a
+second worker, including a cheaper or separately installed custom role.
+
 Give each executor one bounded packet with:
 
 - objective and boundaries;
@@ -665,6 +681,21 @@ Give each executor one bounded packet with:
 Require it to preserve unrelated work, stay inside the slice, avoid the advisor, avoid descendants, and report blockers rather than guess. The handoff includes status, work completed, files or evidence, checks run, and remaining risks.
 
 Parallelize only genuinely independent slices with non-overlapping write ownership. The root inspects, integrates, and verifies every handoff. Executor completion is never final acceptance.
+
+## Current-task route receipt
+
+At task close, include a compact route-use receipt only when the user explicitly
+asked to use, inspect, or evaluate routing, or when the root attempted at least one
+non-root route in the current task. For each relevant route, state the configured or
+requested route, the number of attempts observed in the current task, the route
+evidence state, and the task outcome.
+
+Use `configured but not used` only for zero attempts and give a short reason. Use
+`route accepted` when the exact route controls were accepted. Use `used and
+confirmed` only when mechanical runtime metadata confirms the effective model,
+provider, and effort. Record the outcome separately as completed, failed, cancelled,
+or unknown; route acceptance is not task success. Never scan saved chats or sessions,
+infer runtime identity from child prose, or spawn solely to populate a receipt.
 
 ## Task-local and older-client fallback
 
