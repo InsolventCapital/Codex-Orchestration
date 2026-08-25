@@ -675,6 +675,24 @@ Every seat records host- or bridge-generated runtime evidence with its exact run
         self.assertIn("Planner failure permits the root to take over", mode)
         self.assertIn("stale plan version", mode)
         self.assertIn("invalid or incomplete ledger", mode)
+        self.assertEqual(NATIVE.BOUNDED_CORRECTION_LIMIT, 3)
+        self.assertIn("at most 3 same-task correction cycles", mode)
+        self.assertIn("one corrective edit set inside the existing write scope", mode)
+        self.assertIn("one rerun of the exact failing check", mode)
+        self.assertIn("supplies no initial authority", mode)
+        self.assertIn("A plan revision is not a correction cycle", mode)
+        self.assertIn("does not survive a task restart", mode)
+        self.assertIn("Cross-task correction requires a separately installed", mode)
+        self.assertIn("Installing the plugin", mode)
+        self.assertIn("does not authorize model routing", mode)
+        for forbidden_continuation in (
+            "separate or ambiguously related defect",
+            "changed or weakened test",
+            "protected-gate or permission stop",
+            "uncertain rollback",
+            "exhaustion of cycle 3",
+        ):
+            self.assertIn(forbidden_continuation, mode)
         for unsupported_limit_word in ("six", "seven", "eight"):
             self.assertNotIn(
                 f"{unsupported_limit_word} total Advisor reviews", mode

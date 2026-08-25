@@ -27,6 +27,7 @@ ROUTING_STATE = (SKILL_ROOT / "scripts" / "routing_state.py").read_text(
     encoding="utf-8"
 )
 RELEASE = (REPO_ROOT / "RELEASE.md").read_text(encoding="utf-8")
+SECURITY = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
 
 
 class SkillContractTests(unittest.TestCase):
@@ -366,6 +367,31 @@ Executor — GPT-5.6 Sol high: Activated
         self.assertIn("explicitly made that seat best-effort", SKILL)
         self.assertIn("An unavailable Executor may leave work with the root", SKILL)
         self.assertIn("Planner and Advisor never contact one another directly", SKILL)
+
+    def test_orchestration_is_explicitly_opt_in_and_corrections_are_same_task_only(self) -> None:
+        self.assertIn("## Opt-in default", SKILL)
+        self.assertIn("Installation alone is inactive", SKILL)
+        self.assertIn("must not write persistent routing", SKILL)
+        self.assertIn("`disable` returns the installation to opt-in mode", SKILL)
+        self.assertIn("## Same-task implementation corrections", SKILL)
+        self.assertIn("at most three correction cycles", SKILL)
+        self.assertIn("supplies no initial task authority", SKILL)
+        self.assertIn("Plan-review revisions are separate", SKILL)
+        self.assertIn("does not survive a task\nrestart", SKILL)
+        self.assertIn("this plugin does not provide one", SKILL)
+        for fail_closed_boundary in (
+            "separate or ambiguously related",
+            "test would change or weaken",
+            "protected gate or permission stops",
+            "rollback is uncertain",
+            "third cycle is exhausted",
+        ):
+            self.assertIn(fail_closed_boundary, SKILL)
+
+        self.assertIn("Assets at risk are the user's approved scope", SECURITY)
+        self.assertIn("misclassifying a separate defect", SECURITY)
+        self.assertIn("weakening a failing\ntest", SECURITY)
+        self.assertIn("no cross-task persistence", SECURITY)
 
     def test_continuation_classifier_remains_opt_in_root_owned_and_non_authoritative(self) -> None:
         self.assertIn("## Opt-in continuation classifier", SKILL)

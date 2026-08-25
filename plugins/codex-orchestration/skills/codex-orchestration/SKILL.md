@@ -1,6 +1,6 @@
 ---
 name: codex-orchestration
-description: Use for natural-language questions or requests about whether Kimi K3 or another audited External Model is available or callable as Designer or another role, and for assigning models to Planner, Advisor, Designer, Executor, researcher, reviewer, writer, or supervisor roles. Also use when the user invokes Codex Orchestration to update the plugin, create custom roles, define a workflow, or set up, inspect, repair, change, disable, or temporarily override model routing. Keep the selected task model as root and preserve Codex's Goal, permissions, integration, and verification behavior.
+description: Use only when the user explicitly invokes Codex Orchestration or explicitly asks to inspect, configure, update, disable, or use model routing, including an explicit availability question about Kimi K3 or another audited External Model. Do not invoke it for an ordinary task merely because planning or delegation could help. Keep the selected task model as root and preserve Codex's Goal, permissions, integration, and verification behavior.
 ---
 
 # Codex Orchestration
@@ -38,8 +38,9 @@ is Kimi available to use as Designer?
 can I use Kimi K3 for design?
 ```
 
-Implicit invocation is discovery, not mutation authority. A natural-language
-availability question authorizes only read-only inspection. It never authorizes
+Implicit invocation is discovery, not mutation authority, and is permitted only
+for an explicit natural-language availability question. It authorizes only
+read-only inspection. It never authorizes
 setup, repair, provider preparation, authentication, Gate 0 spend, role creation,
 configuration writes, disconnect, or removal.
 
@@ -66,6 +67,19 @@ Kimi-specific tool is absent; the route is materialized through the External Mod
 lifecycle and a provider-pinned custom agent.
 
 `--update` securely refreshes this plugin from its canonical Git marketplace. `setup` installs or updates the personal one-time routing policy. `create project role` or `create personal role` creates native Codex custom-agent files. `status` inspects built-in routing. `repair` restores only saved managed hint bytes after narrow drift validation. `disable` restores pre-setup values.
+
+## Opt-in default
+
+Installation alone is inactive. Do not route a model, create a plan-review loop, or
+apply a saved preset merely because this skill is installed, discoverable, or useful.
+The current user must explicitly ask for Codex Orchestration, name a routing seat, or
+invoke the literal skill label in the current task.
+
+A seat request with task work is task-local and must not write persistent routing
+configuration. The literal `setup` control is the separate, explicit request for a
+persistent policy that future tasks load automatically. `disable` returns the installation to opt-in mode while leaving the plugin available for later explicit
+requests. Starting a new task is required after setup or disable because an existing
+task does not hot-reload policy instructions.
 
 `remove custom roles` cleans only verified plugin-managed advisor/executor files. Arbitrary native roles are user-owned. An invocation with native seats and work but no control verb is a current-task override and must not rewrite config. Explicit External Model seat labels are the exception: they may perform only the clean preparation, connection, and readiness writes authorized in the External Model lifecycle below.
 
@@ -643,6 +657,30 @@ Reject persistent setup or task-local activation when configured Planner and Adv
 Bundled Claude Planner routes use `create_plan` and `revise_plan`; bundled Claude Advisor routes use `review_plan`. These operations are seat-bound: never send a supplied Planner route to `review_plan`, and never use an Advisor route to create or revise the plan. The policy authorizes only the root to make these read-only calls; Executors must never use or direct them.
 
 For compatibility with the established seat contract: Fable Planner uses `create_plan` and `revise_plan`; Fable Advisor uses `review_plan`. Opus uses the same operation-to-seat mapping.
+
+## Same-task implementation corrections
+
+After implementation begins under an already authorized objective, scope, plan, and
+test contract, the root may perform at most three correction cycles for one ordinary
+implementation defect without another user prompt. Each cycle must preserve the
+exact failing command or artifact-level postcondition and its result, make one
+bounded corrective edit set only inside the existing write scope, rerun the exact
+failing check, and report the cycle number plus remaining budget.
+
+This is correction authority only. It supplies no initial task authority and cannot
+change the objective, acceptance criteria, tests, interfaces, dependencies, write
+paths, routes, tier, spend, production or live-data status, verification contract,
+merge, release, deployment, settlement, configuration, plugin, credential, service,
+timer, or automation authority. Stop before another corrective write when the defect
+is separate or ambiguously related, a test would change or weaken, scope or baseline
+moves, work overlaps or drifts unexpectedly, a protected gate or permission stops,
+rollback is uncertain, or the third cycle is exhausted. Plan-review revisions are separate and never reset the correction count.
+
+The count exists only in the current task context. It does not survive a task
+restart, wake another task, or authorize a cross-task continuation. Durable
+cross-task correction requires a separately installed authority and mechanical
+ledger; this plugin does not provide one. These limits are instruction-enforced;
+normal Codex approvals, sandboxing, and stricter retry rules remain authoritative.
 
 ## Designer handoff
 

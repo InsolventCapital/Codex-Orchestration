@@ -126,6 +126,20 @@ restores only drifted mode/usage bytes through App Server compare-and-swap, veri
 user and effective readback, rolls back on an override, preserves a concurrent edit,
 detects concurrent saved-state replacement without overwriting it, and never changes
 restore state, authentication, credentials, chats, or sessions.
+
+The same-task correction budget is an instruction-enforced authority boundary, not
+a durable scheduler or retry engine. Assets at risk are the user's approved scope,
+test contract, protected gates, external effects, and attention budget. Threats
+include misclassifying a separate defect as the same defect, weakening a failing
+test, resetting the count through plan revision or task restart, using a correction
+to widen authority, and continuing after drift, a protected-gate stop, ambiguous
+rollback, or exhausted cycles. The managed policy mitigates these threats by
+requiring an already authorized task, the exact preserved failing check, one bounded
+edit set and exact rerun per cycle, an explicit limit of three, mandatory reporting,
+and fail-closed stops on every boundary change. The counter is current-task context
+only; the plugin deliberately supplies no cross-task persistence, wakeup, ledger,
+or inferred unused budget. Codex sandboxing, approvals, and every stricter retry
+rule remain the mechanical authority.
 The bundled Fable/Opus Planner-or-Advisor bridge gives authentication and model
 subprocesses only a minimal platform environment, preserving home discovery for the
 official CLI while excluding credential, config-redirection, provider/model/effort,

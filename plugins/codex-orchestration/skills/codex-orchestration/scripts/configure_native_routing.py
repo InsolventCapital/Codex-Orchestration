@@ -44,6 +44,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - Python < 3.11
 POLICY_VERSION = 5
 STATE_SCHEMA = 5
 ADVISOR_REVIEW_LIMIT = 5
+BOUNDED_CORRECTION_LIMIT = 3
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
 PLUGIN_ID = "codex-orchestration@codex-orchestration"
@@ -472,7 +473,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.6",
+                        "version": "0.9.7",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
@@ -1253,6 +1254,8 @@ def build_policy(
     mode = f"""{MANAGED_MARKER}
 This adds model routing to Codex's existing multi-agent flow; it is not a second scheduler.
 
+Routing is opt-in. Installing the plugin, discovering this skill, or deciding that a task is complex does not authorize model routing. Use these routes only after the user explicitly requests Codex Orchestration for the current task or deliberately installs a persistent setup. A task-local request never persists into a later task.
+
 If you are the root task model, you are the orchestrator. Own intent, planning, architecture, decomposition, delegation, integration, review, final verification, and the user-facing answer. Codex still decides whether a plan or subagent helps, how many independent slices exist, and what can run safely in parallel. Keep simple, tightly coupled, context-heavy, or root-owned work with the root. Do not delegate merely to prove the policy is active.
 
 {planner_mode}
@@ -1264,6 +1267,12 @@ If you are the root task model, you are the orchestrator. Own intent, planning, 
 The root owns the plan version, cumulative findings ledger, review count, validation, adjudication, and release to Executor. There is no Finalizer seat. For Advisor rounds two through {advisor_review_limit}, send only the current plan and version plus a compact cumulative ledger, not prior transcripts. Ask the Advisor to confirm or contest dispositions without blindly repeating accepted findings. Reject a stale plan version or an invalid or incomplete ledger and halt before Executor.
 
 On PLAN_REVISE, record the latest finding IDs before revision. After the Planner returns, validate and merge each INCORPORATED or reasoned REJECTED disposition into the cumulative ledger before another Advisor call. A round-{advisor_review_limit} PLAN_REVISE halts before Executor and produces a non-approval artifact containing the latest plan and version, full ledger, latest findings, and choices available to the user. It must not claim approval. Any required Planner or Advisor route failure also halts before Executor. Only an explicit current-task best-effort instruction changes failure handling: Planner failure permits the root to take over planning for the remaining rounds; Advisor failure may proceed only with the result labeled NOT_ADVISOR_APPROVED. No best-effort setting is persisted.
+
+After implementation begins under an already authorized objective, scope, plan, and test contract, the root may make at most {BOUNDED_CORRECTION_LIMIT} same-task correction cycles for one ordinary implementation defect without another user prompt. A cycle starts only after preserving the exact failing command or artifact-level postcondition and its result; it permits one bounded diagnosis, one corrective edit set inside the existing write scope, and one rerun of the exact failing check. Record the cycle number and remaining budget after every attempt.
+
+The correction budget supplies no initial authority and never expands the objective, acceptance criteria, write paths, interfaces, dependencies, model routes, tier, spend, production or live-data status, verification contract, merge, release, deployment, settlement, configuration, plugin, credential, service, timer, or automation authority. A changed or weakened test, a separate or ambiguously related defect, scope or baseline movement, overlap or unexplained drift, a protected-gate or permission stop, uncertain rollback, or exhaustion of cycle {BOUNDED_CORRECTION_LIMIT} halts for the user before another corrective write. A plan revision is not a correction cycle and cannot reset this budget.
+
+This counter exists only in the current task context. It does not survive a task restart, wake or resume another task, create durable authority, or permit a later task to infer unused cycles. Cross-task correction requires a separately installed, mechanically bound authority and ledger; this plugin does not provide one.
 
 When executor delegation materially improves speed, cost, quality, or context isolation, use only the configured executor route. The configured Executor is always a direct child of the root, and only the root creates Executor children. An Executor never delegates to another worker or spawns a descendant. A separately installed custom role is not selected merely because its file exists. Give each executor one bounded, self-contained packet with objective, relevant facts, constraints, owned files or read-only scope, dependencies, acceptance criteria, verification, and handoff format. Inspect every handoff, integrate it, and run final checks yourself.
 

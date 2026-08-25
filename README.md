@@ -19,6 +19,20 @@ route. A separately installed custom role is not selected merely because its fil
 exists; select that exact role as Executor if you want the root to route implementation
 work to it.
 
+## Opt-in by default
+
+Installing the plugin does not activate orchestration. New tasks use ordinary Codex
+unless you explicitly invoke `$codex-orchestration:codex-orchestration`, name an
+orchestration seat, or ask an explicit routing or External Model availability
+question.
+
+Use a task-local seat request when you want orchestration for one task only. The
+literal `setup` control is intentionally different: it installs a persistent preset
+that later tasks load automatically. Use the literal `disable` control to restore
+the pre-setup values and return to opt-in mode without uninstalling the plugin.
+Setup and disable take effect in newly started tasks; existing tasks do not hot-load
+policy changes.
+
 ## Explicit continuation classification
 
 Version 0.9.5 includes an opt-in, read-only classifier for future scanner adapters.
@@ -84,6 +98,13 @@ change any installed configuration by itself.
 ```
 
 Planner and Advisor can work through several revisions. Codex stops as soon as the Advisor returns `PLAN_APPROVED`, with a safety limit of five reviews. If approval is not reached, execution stops and Codex shows you the latest plan and unresolved issues.
+
+After implementation starts, Codex may make up to three same-task corrections for
+the same ordinary implementation defect without asking again. Each cycle remains
+inside the already approved scope and reruns the exact failing check. A separate
+defect, changed test or boundary, protected-gate stop, unexplained drift, uncertain
+rollback, or exhausted third cycle stops for you. The count is not durable and does
+not continue into another task.
 
 ## Why use it?
 
@@ -368,7 +389,9 @@ lets the natural `Designer: Kimi K3` label enter the External Model lifecycle;
 version **0.7.2 or newer** uses the concise per-role activation confirmation;
 version **0.8.0 or newer** uses sealed direct CLI invocation for READY External
 Model roles; version **0.9.0 or newer** adds Claude Opus 5 subscription routing;
-version **0.9.4 or newer** adds the explicit-input continuation classifier.
+version **0.9.4 or newer** adds the explicit-input continuation classifier; version
+**0.9.7 or newer** makes opt-in behavior explicit and adds the bounded same-task
+three-correction contract.
 Confirm with
 `codex plugin list --json`, then restart Codex Desktop and start a new task.
 

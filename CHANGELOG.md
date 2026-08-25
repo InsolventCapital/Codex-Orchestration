@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.7 — Unreleased
+
+- Make orchestration explicitly opt-in when no persistent setup is installed;
+  installation or task complexity alone never authorizes routing, while `disable`
+  returns an installed plugin to on-request mode.
+- Add an instruction-enforced budget of three same-task corrections for one
+  ordinary implementation defect, bounded by the existing authority, scope, exact
+  failing check, stricter gates, and a non-durable counter that cannot cross tasks.
+- Document the correction-budget threat model and fail-closed boundaries for
+  separate defects, changed tests, drift, protected gates, and exhausted cycles.
+
 ## 0.9.6 — Unreleased
 
 - Make the configured Executor explicitly root-direct: only the root creates
