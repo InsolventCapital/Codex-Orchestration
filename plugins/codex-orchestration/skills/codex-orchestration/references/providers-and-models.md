@@ -384,5 +384,6 @@ package installed but disabled; native removal erases unowned plugin-local setti
 and routing disable/setup loses personal Verifier extensions. No generic bypass or
 policy-field rewrite is authorized. LOCAL_FIXTURE checks do not qualify real HTTPS
 or a live profile migration. The standalone personal Opus Verifier stays separate;
-there is no native Verifier field. Existing routes, policy markers, review gates and
-the externally frozen original containment round5 budget are not reset by install.
+there is no native Verifier field. Existing routes, policy markers and review gates
+remain binding. Preserve each user's applicable task-local review budgets and owner
+authorization gates; installation never resets or replenishes them.

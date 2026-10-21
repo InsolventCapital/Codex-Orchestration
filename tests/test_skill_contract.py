@@ -175,7 +175,7 @@ Executor — GPT-5.6 Sol high: Activated
                     "https://github.com/InsolventCapital/Codex-Orchestration.git",
                     "ref `main`", "source/ref drift", "inactive old package",
                     "source/policy hashes", "versioned CAS", "tested rollback",
-                    "hint bytes", "round5",
+                    "hint bytes",
                 ):
                     self.assertIn(required, " ".join(document.split()))
                 self.assertNotIn("codex plugin add codex-orchestration@codex-orchestration", document)
@@ -187,6 +187,42 @@ Executor — GPT-5.6 Sol high: Activated
             "Never run `plugin remove`", "No generic bypass or policy-field rewrite",
         ):
             self.assertIn(required, SKILL)
+
+    def test_distribution_preserves_task_local_budgets_and_owner_authorization(self) -> None:
+        documents = {
+            "README.md": README,
+            "RELEASE.md": RELEASE,
+            "SECURITY.md": (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8"),
+            "SKILL.md": SKILL,
+            "providers-and-models.md": REFERENCE,
+        }
+        for name, document in documents.items():
+            with self.subTest(document=name):
+                normalized = " ".join(document.split())
+                for required in (
+                    "Preserve each user's applicable task-local review budgets",
+                    "owner authorization gates",
+                    "installation never resets or replenishes them",
+                ):
+                    self.assertIn(required, normalized)
+
+    def test_distribution_rejects_private_lineage_dispositions(self) -> None:
+        documents = {
+            "README.md": README,
+            "RELEASE.md": RELEASE,
+            "SECURITY.md": (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8"),
+            "SKILL.md": SKILL,
+            "providers-and-models.md": REFERENCE,
+        }
+        for name, document in documents.items():
+            with self.subTest(document=name):
+                compact = "".join(document.casefold().split())
+                for forbidden in (
+                    "originalcontainment", "round5", "round-5", "advisor8/10",
+                    "exhaustedreadinessattempts", "blockedintegration",
+                    "shared8/10", "opusreadiness2/2",
+                ):
+                    self.assertNotIn(forbidden, compact)
 
     def test_fork_security_reporting_does_not_invent_private_channel(self) -> None:
         security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")

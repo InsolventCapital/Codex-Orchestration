@@ -193,9 +193,9 @@ extensions. Use native AppServer versioned CAS only on exact old/new plugin enab
 and Fable-MCP enabled fields. No generic bypass or policy-field rewrite is allowed.
 Local fixture success is not real HTTPS or live profile qualification.
 The standalone personal Opus Verifier remains separate; never add a native Verifier
-field. Existing owner gates and the externally frozen original containment round5
-budget remain binding and are never reset by installation. Preserve separate
-Advisor8/10, exhausted readiness attempts, and blocked integration dispositions.
+field. Existing owner gates remain binding. Preserve each user's applicable
+task-local review budgets and owner authorization gates; installation never resets
+or replenishes them.
 
 ## External Model roles
 

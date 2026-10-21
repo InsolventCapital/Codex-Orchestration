@@ -363,9 +363,8 @@ live user automatically. See RELEASE.md for the future qualification gates.
 
 The standalone personal Opus Verifier remains separate; no native Verifier field
 is added. Existing policy markers, default routes and review gates remain binding.
-The original containment round5 budget remains externally frozen; installation
-never resets it or the separate Advisor8/10, exhausted readiness attempts, or
-blocked integration dispositions.
+Preserve each user's applicable task-local review budgets and owner authorization
+gates; installation never resets or replenishes them.
 
 Before downgrading to a version older than the currently saved routing schema, enter the prompt `$codex-orchestration:codex-orchestration disable` with the current version first.
 

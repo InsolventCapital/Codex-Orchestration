@@ -45,9 +45,9 @@ the current live user.
 
 The standalone personal Opus Verifier is separate from bundled seat qualification;
 never add a native Verifier field. Preserve policy markers, default route choices,
-model/runtime allowlists and all existing review gates. The original containment
-round5 budget remains externally frozen and is never reset by installation; separate
-Advisor8/10, exhausted readiness attempts and blocked integration remain unchanged.
+model/runtime allowlists and all existing review gates. Preserve each user's
+applicable task-local review budgets and owner authorization gates; installation
+never resets or replenishes them.
 Source changes invalidate earlier review/verification; obtain a fresh final-tree
 review bound to the exact head SHA and all required hosted checks before handoff.
 

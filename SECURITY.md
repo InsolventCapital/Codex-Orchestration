@@ -137,5 +137,6 @@ hint bytes, personal Verifier paragraphs, receipt and registration, and all unow
 fields. Retain the inactive old package installed but disabled: native removal erases
 unowned plugin-local settings, and routing disable/setup loses personal Verifier
 extensions. LOCAL_FIXTURE coverage proves neither real HTTPS nor live migration.
-The standalone personal Opus Verifier and existing policy/review gates, including
-the externally frozen original containment round5 budget, remain unchanged.
+The standalone personal Opus Verifier and existing policy/review gates remain
+unchanged. Preserve each user's applicable task-local review budgets and owner
+authorization gates; installation never resets or replenishes them.
