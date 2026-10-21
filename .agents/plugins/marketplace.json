@@ -1,7 +1,7 @@
 {
-  "name": "codex-orchestration",
+  "name": "insolvent-capital-codex-orchestration",
   "interface": {
-    "displayName": "Codex Orchestration"
+    "displayName": "Insolvent Capital Codex Orchestration"
   },
   "plugins": [
     {
