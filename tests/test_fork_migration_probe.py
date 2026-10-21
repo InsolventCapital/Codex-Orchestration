@@ -624,7 +624,10 @@ class ProbeTests(unittest.TestCase):
             measured = report["git_measurements"][market]
             self.assertEqual(measured["requested_ref"], "main")
             self.assertEqual(measured["resolved_commit"], "a" * 40)
-            self.assertTrue(measured["package_hashes"])
+            self.assertEqual(set(measured["package_hashes"]), {
+                ".codex-plugin/plugin.json", ".mcp.json",
+                "skills/codex-orchestration/SKILL.md", probe.CONFIGURATOR})
+            self.assertEqual(measured["package_hashes"], report["fixture_package_hashes"][market])
         marketplace_adds = [args for args in runner.calls if args[1:4] == ["plugin", "marketplace", "add"]]
         self.assertEqual(len(marketplace_adds), 2)
         self.assertTrue(all(args[4].startswith("http://127.0.0.1:43123/") for args in marketplace_adds))
@@ -698,6 +701,94 @@ class ProbeTests(unittest.TestCase):
                     probe.measure_git_cache(runner, Path(env["CODEX_HOME"]), market,
                                             inventory, url, "a" * (7 if fault == "short_commit" else 40),
                                             roots[market])
+
+    def test_package_inventory_mutations_block_all_three_comparison_sites(self):
+        original_json = FakeRunner.json
+        faults = ("extra_file", "extra_skill", "empty_directory", "symlink",
+                  "dangling_symlink", "directory_symlink", "fifo", "changed", "missing",
+                  "file_to_directory")
+        for site in ("marketplace", "installed", "readd"):
+            for market in (probe.UPSTREAM, probe.CANDIDATE):
+                for fault in faults:
+                    with self.subTest(site=site, market=market, fault=fault), \
+                            tempfile.TemporaryDirectory(dir=self.root) as raw:
+                        report = self.report()
+                        injected = []
+
+                        def mutate(runner, args):
+                            result = original_json(runner, args)
+                            if args[1:4] != ["plugin", "add", "codex-orchestration@" + market]:
+                                return result
+                            adds = sum(call[1:4] == args[1:4] for call in runner.calls)
+                            if adds != (3 if site == "readd" else 2):
+                                return result
+                            package = Path(result["source"]["path"] if site == "marketplace"
+                                           else result["installedPath"])
+                            expected = package / "skills/codex-orchestration/SKILL.md"
+                            extra = package / "unexpected"
+                            if fault == "extra_file":
+                                extra.write_text("unexpected payload")
+                            elif fault == "extra_skill":
+                                skill = package / "skills/unexpected/SKILL.md"
+                                skill.parent.mkdir()
+                                skill.write_text("unexpected discoverable skill")
+                            elif fault == "empty_directory":
+                                extra.mkdir()
+                            elif fault == "symlink":
+                                extra.symlink_to(expected)
+                            elif fault == "dangling_symlink":
+                                extra.symlink_to(package / "absent")
+                            elif fault == "directory_symlink":
+                                extra.symlink_to(package / "skills", target_is_directory=True)
+                            elif fault == "fifo":
+                                os.mkfifo(extra)
+                            elif fault == "changed":
+                                expected.write_text("changed expected bytes")
+                            elif fault == "missing":
+                                expected.unlink()
+                            elif fault == "file_to_directory":
+                                expected.unlink()
+                                expected.mkdir()
+                            injected.append(package)
+                            return result
+
+                        with mock.patch.object(probe, "Runner", FakeRunner), \
+                                mock.patch.object(FakeRunner, "json", mutate), \
+                                mock.patch.object(probe, "source_fixture", minimal_sources):
+                            probe.qualify_fixture(Path(raw), Path("/never-executed"), report, 43123)
+                        self.assertEqual(len(injected), 1)
+                        stage = {
+                            "marketplace": "upstream_lifecycle" if market == probe.UPSTREAM else "candidate_lifecycle",
+                            "installed": "identity_and_skills",
+                            "readd": "migration" if market == probe.CANDIDATE else "rollback",
+                        }[site]
+                        result = report["checks"][stage]
+                        self.assertEqual(result["status"], "BLOCKED", report)
+                        self.assertIn({"marketplace": "native marketplace package differs from publisher",
+                                       "installed": "native cache differs from synthetic fixture source",
+                                       "readd": "native re-add changed installed package bytes"}[site],
+                                      result["reason"])
+                        if site == "readd":
+                            self.assertNotIn(market, report.get("transition_inventory", {}))
+                            self.assertEqual(report["checks"]["identity_and_skills"]["status"], "PASS")
+                            if market == probe.UPSTREAM:
+                                self.assertEqual(report["checks"]["migration"]["status"], "PASS")
+
+    def test_package_comparison_rejects_unsafe_publisher_entries(self):
+        for fault in ("symlink", "dangling_symlink", "fifo"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir=self.root) as raw:
+                root = Path(raw)
+                expected, actual = root / "expected", root / "actual"
+                expected.mkdir()
+                (expected / "payload").write_text("fixture")
+                shutil.copytree(expected, actual)
+                extra = expected / "unexpected"
+                if fault == "fifo":
+                    os.mkfifo(extra)
+                else:
+                    extra.symlink_to(expected / ("payload" if fault == "symlink" else "absent"))
+                with self.assertRaisesRegex(probe.Blocked, "unsafe package entry"):
+                    probe.compare_package(expected, actual, root, "publisher comparison")
 
     def test_readd_cache_head_mismatch_blocks_rollback(self):
         report = self.report()

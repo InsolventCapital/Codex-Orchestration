@@ -596,6 +596,44 @@ def preserved(before: dict, after: dict) -> None:
         raise Failed("supported native path changed/dropped synthetic " + ", ".join(lost))
 
 
+def compare_package(expected: Path, actual: Path, root: Path, reason: str) -> dict[str, str]:
+    """Compare complete package inventories, then bytes; Git roots stay outside.
+
+    Extra discoverable skills are executable payload too. Never follow links or
+    skip special entries (including dangling links, FIFOs and empty directories).
+    Inspect both trees before reading any file bytes so unsafe entries fail closed.
+    """
+    def inventory(package):
+        owned(package, root)
+        require(stat.S_ISDIR(package.lstat().st_mode), reason + ": package is not a directory")
+        entries = {}
+
+        def visit(directory):
+            for path in sorted(directory.iterdir()):
+                mode = path.lstat().st_mode
+                relative = path.relative_to(package).as_posix()
+                require(stat.S_ISDIR(mode) or stat.S_ISREG(mode),
+                        reason + ": unsafe package entry " + relative)
+                entries[relative] = "directory" if stat.S_ISDIR(mode) else "file"
+                if stat.S_ISDIR(mode):
+                    visit(path)
+
+        visit(package)
+        return entries
+
+    expected_entries = inventory(expected)
+    actual_entries = inventory(actual)
+    require(actual_entries == expected_entries, reason + ": package inventory mismatch")
+    hashes = {}
+    for relative, kind in expected_entries.items():
+        if kind == "file":
+            value = (expected / relative).read_bytes()
+            require((actual / relative).read_bytes() == value, reason + ": " + relative)
+            hashes[relative] = digest(value)
+    require(bool(hashes), "publisher package is empty")
+    return hashes
+
+
 def measure_git_cache(runner: Runner, home: Path, market: str, inventory: dict,
                       source_url: str, expected_commit: str, publisher: Path) -> dict:
     """Measure the owned native checkout independently of inventory metadata.
@@ -627,17 +665,10 @@ def measure_git_cache(runner: Runner, home: Path, market: str, inventory: dict,
     require(origin == source_url, "native cached marketplace origin mismatch")
     resolved = git("rev-parse", "HEAD")
     require(resolved == expected_commit, "native cached marketplace HEAD mismatch")
-    hashes = {}
-    for path in sorted((publisher / PACKAGE).rglob("*")):
-        if path.is_file():
-            relative = path.relative_to(publisher / PACKAGE)
-            cached = owned(package / relative, home)
-            require(cached.is_file() and cached.read_bytes() == path.read_bytes(),
-                    "native marketplace package differs from publisher")
-            hashes[relative.as_posix()] = digest(path.read_bytes())
-    require(bool(hashes), "publisher package is empty")
+    hashes = compare_package(publisher / PACKAGE, package, runner.temp,
+                             "native marketplace package differs from publisher")
     return {"requested_ref": "main", "resolved_commit": resolved, "origin": origin,
-            "measurement_method": "owned native marketplace Git root: rev-parse --show-toplevel, config --get remote.origin.url, rev-parse HEAD; publisher package byte comparison",
+            "measurement_method": "owned native marketplace Git root: rev-parse --show-toplevel, config --get remote.origin.url, rev-parse HEAD; complete publisher package inventory and byte comparison",
             "cache_root": str(cache.relative_to(home)), "package_hashes": hashes}
 
 
@@ -775,14 +806,8 @@ def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
                 and not installed[CANDIDATE].is_relative_to(installed[UPSTREAM]), "cache roots collide")
         report["fixture_package_hashes"] = {}
         for market, path in installed.items():
-            hashes = {}
-            for source in sorted((roots[market] / PACKAGE).rglob("*")):
-                if source.is_file():
-                    relative = source.relative_to(roots[market] / PACKAGE)
-                    cached = owned(path / relative, temp)
-                    require(cached.is_file() and cached.read_bytes() == source.read_bytes(),
-                            "native cache differs from synthetic fixture source")
-                    hashes[relative.as_posix()] = digest(source.read_bytes())
+            hashes = compare_package(roots[market] / PACKAGE, path, temp,
+                                     "native cache differs from synthetic fixture source")
             report["fixture_package_hashes"][market] = hashes
             skill = path / "skills/codex-orchestration/SKILL.md"
             require(skill.read_bytes() == (roots[market] / PACKAGE / "skills/codex-orchestration/SKILL.md").read_bytes(),
@@ -872,10 +897,10 @@ def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
                 "native re-add changed fixture version or Git provenance")
         measure_git_cache(runner, home_root, new, inventory, sources[new],
                           report["git_measurements"][new]["resolved_commit"], roots[new])
-        for relative, expected_hash in report["fixture_package_hashes"][new].items():
-            cached = owned(installed[new] / relative, home_root)
-            require(cached.is_file() and digest(cached.read_bytes()) == expected_hash,
-                    "native re-add changed installed package bytes")
+        hashes = compare_package(roots[new] / PACKAGE, installed[new], temp,
+                                 "native re-add changed installed package bytes")
+        require(hashes == report["fixture_package_hashes"][new],
+                "native re-add changed installed package bytes")
         retained = cli("list").get("installed", [])
         require(any(e.get("pluginId") == f"codex-orchestration@{old}"
                     and e.get("enabled") is False for e in retained),
