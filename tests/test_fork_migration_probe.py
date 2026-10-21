@@ -18,19 +18,53 @@ from unittest import mock
 from scripts import fork_migration_probe as probe
 
 
+def encode_toml(config):
+    """Test-only native config serialization; positive harness never writes TOML."""
+    lines = []
+    def emit(table, path):
+        if path:
+            lines.append("[" + ".".join(json.dumps(key) for key in path) + "]")
+        for key, value in table.items():
+            if not isinstance(value, dict):
+                lines.append(json.dumps(key) + " = " + json.dumps(value))
+        for key, value in table.items():
+            if isinstance(value, dict):
+                emit(value, [*path, key])
+    emit(config, [])
+    return "\n".join(lines) + "\n"
+
+
 class FakeRunner:
     """Caller-boundary simulation; never starts Codex, Git, MCP, or a model."""
     instances = []
     fail_upgrade = False
 
-    def __init__(self, temp, env, report):
+    def __init__(self, temp, env, report, port=None):
         self.temp, self.env, self.report = temp, env, report
         self.packages = {}
+        self.port = port
+        self.sources = {}
         self.calls = []
         self.__class__.instances.append(self)
 
     def run(self, args, **kwargs):
         self.calls.append(args)
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
+        if str(self.temp / "cas.py") in args:
+            config_file = Path(self.env["CODEX_HOME"]) / "config.toml"
+            config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
+            import re
+            for edit in json.loads(args[-1]):
+                parts = [a or b for a, b in re.findall(r'"([^"]+)"|([^.]+)', edit["keyPath"])]
+                value = config
+                for part in parts[:-1]:
+                    value = value.setdefault(part, {})
+                value[parts[-1]] = edit["value"]
+                if len(parts) == 3 and parts[1] in self.packages:
+                    self.packages[parts[1]]["enabled"] = edit["value"]
+            config_file.write_text(encode_toml(config))
+            return subprocess.CompletedProcess(args, 0, '{"status":"ok"}', "")
         if args[-1] == "--version":
             return subprocess.CompletedProcess(args, 0, "codex-cli 0.144.1\n", "")
         if probe.CONFIGURATOR in " ".join(args):
@@ -58,21 +92,27 @@ class FakeRunner:
                 if self.fail_upgrade:
                     raise probe.Blocked("mock native upgrade unavailable")
                 return {"errors": [], "selectedMarketplaces": [args[2]]}
+            if args[1] == "add":
+                market = args[2].split("/")[-1][:-4]
+                self.sources[market] = args[2]
             return {}
         plugin_id = args[1]
         market = plugin_id.split("@")[1]
         if args[0] == "remove":
             self.packages.pop(plugin_id, None)
             return {}
-        if args[0] == "disable":
-            self.packages[plugin_id]["enabled"] = False
-            return {}
         source = self.temp / market / probe.PACKAGE
         version = json.loads((source / ".codex-plugin/plugin.json").read_text())["version"]
         dest = self.temp / "codex" / "cache" / market / version
         if not dest.exists():
             shutil.copytree(source, dest)
-        entry = {"pluginId": plugin_id, "version": version, "enabled": True,
+        config_file = Path(self.env["CODEX_HOME"]) / "config.toml"
+        config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
+        config.setdefault("plugins", {}).setdefault(plugin_id, {})["enabled"] = True
+        config_file.write_text(encode_toml(config))
+        entry = {"marketplaceSource": {"sourceType": "git", "source": self.sources[market],
+                                       "ref": "main", "resolvedRef": "a" * 40},
+                 "pluginId": plugin_id, "version": version, "enabled": True,
                  "installedPath": str(dest)}
         self.packages[plugin_id] = entry
         return entry
@@ -139,7 +179,7 @@ class ProbeTests(unittest.TestCase):
         for key in ("HOME", "CODEX_HOME", "XDG_CONFIG_HOME"):
             self.assertTrue(Path(env[key]).is_relative_to(self.root))
             self.assertEqual(list(Path(env[key]).iterdir()), [])
-        self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file")
+        self.assertEqual(env["GIT_ALLOW_PROTOCOL"], "file:http")
 
     def test_owned_path_rejects_symlinks_traversal_and_escape(self):
         (self.root / "link").symlink_to(self.root / "nonexistent")
@@ -178,7 +218,8 @@ class ProbeTests(unittest.TestCase):
     def test_guard_refuses_model_mcp_and_gate_bypass_dispatch(self):
         guard = probe.write_guard(self.root, Path("/never-execute-native"))
         source = guard.read_text()
-        for args in (["exec", "prompt"], ["--model", "claude-opus-5"], ["mcp", "list"],
+        for args in (["plugin", "disable", "codex-orchestration@codex-orchestration", "--json"],
+                     ["exec", "prompt"], ["--model", "claude-opus-5"], ["mcp", "list"],
                      ["plugin", "add", "unknown@evil", "--json"],
                      ["plugin", "add", "codex-orchestration@codex-orchestration", "--allow-incompatible-client"],
                      ["plugin", "marketplace", "add", "https://evil.invalid", "--ref", "main", "--json"]):
@@ -192,6 +233,144 @@ class ProbeTests(unittest.TestCase):
                 popen.assert_not_called()
         events = [json.loads(line) for line in (self.root / "audit.jsonl").read_text().splitlines()]
         self.assertTrue(all(event == {"denied": "cli_dispatch"} for event in events))
+
+    def test_transport_guard_pins_exact_owned_git_urls(self):
+        sources = probe.fixture_urls(43123)
+        guard = probe.write_guard(self.root, Path("/never-execute-native"), sources)
+        for source, allowed in ((sources[0], True), (sources[1], True),
+                                (str(self.root / probe.UPSTREAM), False),
+                                (sources[0].replace("43123", "43124"), False),
+                                (sources[0].replace("127.0.0.1", "localhost"), False),
+                                (sources[0] + "?proxy=evil", False),
+                                (sources[0] + "/../other", False)):
+            with self.subTest(source=source), \
+                    mock.patch.object(sys, "argv", [str(guard), "plugin", "marketplace", "add",
+                                                   source, "--ref", "main", "--json"]), \
+                    mock.patch.object(subprocess, "call", return_value=0) as call:
+                with self.assertRaises(SystemExit) as result:
+                    exec(compile(guard.read_text(), str(guard), "exec"), {})
+                self.assertEqual(result.exception.code, 0 if allowed else 97)
+                self.assertEqual(call.called, allowed)
+        for port in (0, -1, 65536, True, "123"):
+            with self.assertRaises(probe.Blocked):
+                probe.fixture_urls(port)
+        with self.assertRaises(probe.Blocked):
+            probe.write_guard(self.root, Path("/never"), ("https://evil.invalid/repo",))
+
+    def test_rpc_cas_scope_refuses_policy_unowned_and_missing_versions(self):
+        guard = probe.write_guard(self.root, Path("/never-execute-native"))
+        valid = {"edits": [{"keyPath": probe.plugin_key(probe.UPSTREAM),
+                            "value": False, "mergeStrategy": "replace"}],
+                 "expectedVersion": "measured-version", "reloadUserConfig": True}
+        class Sink(io.BytesIO):
+            def close(self):
+                pass
+        variants = [valid, [], None, {"edits": [{}]}]
+        for key, value in (("expectedVersion", None), ("expectedVersion", ""),
+                           ("reloadUserConfig", False)):
+            variants.append(dict(valid, **{key: value}))
+        for path in ("features.multi_agent_v2.multi_agent_mode_hint_text",
+                     "mcp_servers.claude-verifier-python3.enabled",
+                     "plugins.evil.enabled"):
+            variants.append(dict(valid, edits=[dict(valid["edits"][0], keyPath=path)]))
+        variants.extend([dict(valid, edits=[]),
+                         dict(valid, edits=valid["edits"] * 2),
+                         dict(valid, edits=[dict(valid["edits"][0], value="false")]),
+                         dict(valid, edits=[dict(valid["edits"][0], mergeStrategy="upsert")]),
+                         dict(valid, edits=[dict(valid["edits"][0], keyPath=[])])])
+        for params in variants:
+            sink = Sink()
+            process = mock.Mock(stdin=sink)
+            process.wait.return_value = 0
+            with self.subTest(params=params), \
+                    mock.patch.object(sys, "argv", [str(guard), "app-server", "--stdio"]), \
+                    mock.patch.object(sys, "stdin", io.StringIO(json.dumps(
+                        {"id": 1, "method": "config/batchWrite", "params": params}) + "\n")), \
+                    mock.patch.object(subprocess, "Popen", return_value=process), \
+                    mock.patch("threading.Thread", side_effect=lambda target, daemon: mock.Mock(start=target)):
+                with self.assertRaises(SystemExit):
+                    exec(compile(guard.read_text(), str(guard), "exec"), {})
+            self.assertEqual(bool(sink.getvalue()), params == valid)
+
+    def test_synthetic_claude_metadata_never_allows_print_or_inference(self):
+        probe.write_guard(self.root, Path("/never"))
+        shim = (self.root / "bin/claude").read_text()
+        for args in (["--print", "hello"], ["--help", "--print"], [], ["--model", "claude-fable-5"]):
+            with self.subTest(args=args), mock.patch.object(sys, "argv", ["claude", *args]):
+                with self.assertRaises(SystemExit) as result:
+                    exec(compile(shim, "synthetic-claude", "exec"), {})
+                self.assertEqual(result.exception.code, 97)
+        for args in (["auth", "status", "--json"], ["--help"], ["--version"]):
+            with self.subTest(args=args), mock.patch.object(sys, "argv", ["claude", *args]), \
+                    redirect_stdout(io.StringIO()) as output:
+                exec(compile(shim, "synthetic-claude", "exec"), {})
+                self.assertTrue(output.getvalue())
+
+    def test_native_cas_helper_uses_exact_layer_version_and_fails_closed(self):
+        native = self.load_native()
+        edits = [{"keyPath": probe.plugin_key(probe.UPSTREAM), "value": False,
+                  "mergeStrategy": "replace"}]
+        home = str(self.root)
+        def layer(version, enabled):
+            return {"layers": [{"name": {"type": "user", "profile": None},
+                                "version": version,
+                                "config": {"plugins": {"codex-orchestration@" + probe.UPSTREAM:
+                                                        {"enabled": enabled}}}}]}
+        for version, write_status, readback, fails in (
+                ("exact-v1", "ok", False, False),
+                (None, "ok", False, True), ("", "ok", False, True),
+                ("exact-v1", "versionMismatch", False, True),
+                ("exact-v1", "ok", True, True),
+                ("exact-v1", "okOverridden", False, True)):
+            app = mock.Mock()
+            app.request.side_effect = [layer(version, True), layer("v2", readback)]
+            with self.subTest(version=version, status=write_status, readback=readback), \
+                    mock.patch.dict(sys.modules, {"configure_native_routing": native}), \
+                    mock.patch.object(native, "AppServer") as server, \
+                    mock.patch.object(native, "_batch_write", return_value={"status": write_status}) as write, \
+                    mock.patch.object(sys, "argv", ["cas.py", "/fixture", "/guard", home, json.dumps(edits)]), \
+                    mock.patch.object(sys, "path", list(sys.path)), redirect_stdout(io.StringIO()):
+                server.return_value.__enter__.return_value = app
+                if fails:
+                    with self.assertRaises(RuntimeError):
+                        exec(compile(probe.CAS_HELPER, "fixture-cas", "exec"), {})
+                else:
+                    exec(compile(probe.CAS_HELPER, "fixture-cas", "exec"), {})
+                if version:
+                    write.assert_called_once_with(app, edits, version, reload_user_config=True)
+                else:
+                    write.assert_not_called()
+
+    def test_loopback_sandbox_and_root_server_lifecycle(self):
+        env = probe.child_env(self.root)
+        with mock.patch.object(probe.sys, "platform", "darwin"), \
+                mock.patch.object(Path, "is_file", return_value=True):
+            probe.Runner(self.root, env, self.report(), 43123)
+        profile = (self.root / "child.sb").read_text()
+        self.assertIn('(remote ip "127.0.0.1:43123")', profile)
+        self.assertNotIn("(allow network*)", profile)
+        server = mock.Mock(server_port=43123)
+        thread = mock.Mock()
+        thread.is_alive.return_value = False
+        with mock.patch.object(probe, "ThreadingHTTPServer", return_value=server) as create, \
+                mock.patch.object(probe, "Thread", return_value=thread):
+            with self.assertRaisesRegex(RuntimeError, "caller failure"):
+                with probe.serve_git(self.root) as port:
+                    self.assertEqual(port, 43123)
+                    raise RuntimeError("caller failure")
+        self.assertEqual(create.call_args.args[0], ("127.0.0.1", 0))
+        handler_class = create.call_args.args[1].func
+        for path, allowed in (("/" + probe.UPSTREAM + ".git/info/refs", True),
+                              ("/" + probe.UPSTREAM + ".git/info/refs?service=git-upload-pack", True),
+                              ("/" + probe.CANDIDATE + ".git/HEAD", True),
+                              ("/" + probe.UPSTREAM + ".git/../outside", False),
+                              ("/" + probe.UPSTREAM + ".git/%2e%2e/outside", False),
+                              ("/" + probe.UPSTREAM + ".git/HEAD?evil=true", False),
+                              ("/other.git/HEAD", False)):
+            self.assertEqual(handler_class.permitted(mock.Mock(path=path)), allowed, path)
+        server.shutdown.assert_called_once()
+        server.server_close.assert_called_once()
+        thread.join.assert_called_once_with(timeout=5)
 
     def test_guard_allows_only_metadata_caller_boundary(self):
         guard = probe.write_guard(self.root, Path("/never-execute-native"))
@@ -329,6 +508,44 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse((self.root / probe.STATE).exists())
         self.assertTrue((self.root / "policy-receipt.txt").exists())
 
+    def test_active_fable_fixture_uses_valid_registered_namespace_state(self):
+        native = self.load_native()
+        probe.seed_policy(self.root, active=True)
+        saved_bytes = (self.root / probe.STATE).read_bytes()
+        state = json.loads(saved_bytes)
+        native.validate_routing_state(state)
+        config = tomllib.loads((self.root / "config.toml").read_text())
+        self.assertTrue(native._managed_matches(state, native._current_values(config)))
+        before = probe.snapshot(self.root)
+        old = config["plugins"]["codex-orchestration@" + probe.UPSTREAM]
+        old["enabled"] = False
+        old["mcp_servers"][probe.FABLE_SERVERS[0]]["enabled"] = False
+        target = config["plugins"]["codex-orchestration@" + probe.CANDIDATE]
+        target["enabled"] = True
+        target["mcp_servers"] = {server: {"enabled": i == 0}
+                                 for i, server in enumerate(probe.FABLE_SERVERS)}
+        (self.root / "config.toml").write_text(encode_toml(config))
+        with mock.patch.object(native, "PLUGIN_ID", "codex-orchestration@" + probe.CANDIDATE):
+            self.assertTrue(native._managed_matches(state, native._current_values(config)))
+        probe.preserved(before, probe.snapshot(self.root))
+        self.assertEqual((self.root / probe.STATE).read_bytes(), saved_bytes)
+
+    def test_preservation_checks_full_hints_registration_and_all_unowned_fields(self):
+        probe.seed_policy(self.root)
+        original = (self.root / "config.toml").read_text()
+        before = probe.snapshot(self.root)
+        for old, new, field in (("Synthetic existing policy.", "Changed policy.", "mode_usage"),
+                                ("Synthetic usage.", "Changed usage.", "mode_usage"),
+                                ("fixture-verifier-never-run", "other-verifier", "verifier_registration"),
+                                ("unowned-5c81", "changed-unowned", "unowned")):
+            with self.subTest(field=field):
+                (self.root / "config.toml").write_text(original.replace(old, new))
+                with self.assertRaisesRegex(probe.Failed, field):
+                    probe.preserved(before, probe.snapshot(self.root))
+        report = self.report()
+        probe.check(report, "preservation", lambda: probe.preserved(before, probe.snapshot(self.root)))
+        self.assertEqual(report["checks"]["preservation"]["status"], "FAIL")
+
     def test_real_disable_refuses_unregistered_drift_before_any_write(self):
         native = self.load_native()
         probe.seed_policy(self.root, drift=True)
@@ -349,29 +566,84 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaises(probe.Blocked):
             probe.seed_policy(self.root)
 
-    def test_mocked_native_migration_records_loss_and_still_exercises_rollback(self):
+    def test_mocked_native_migration_preserves_active_state_and_exercises_rollback(self):
         report = self.report()
         with mock.patch.object(probe, "Runner", FakeRunner), \
-                mock.patch.object(probe, "source_fixture", minimal_sources):
+                mock.patch.object(probe, "source_fixture", minimal_sources), \
+                mock.patch.object(probe, "serve_git") as server:
+            server.return_value.__enter__.return_value = 43123
             probe.qualify(self.root, Path("/never-executed"), report)
         for key in ("upstream_lifecycle", "candidate_lifecycle", "identity_and_skills",
-                    "registered_fixture", "unregistered_drift", "migration", "rollback", "cleanup_primitives"):
+                    "registered_fixture", "unregistered_drift", "migration", "rollback", "cleanup_primitives",
+                    "preservation", "rollback_preservation", "disable_negative_control"):
             self.assertEqual(report["checks"][key]["status"], "PASS", (key, report))
-        for key in ("preservation", "rollback_preservation"):
-            self.assertEqual(report["checks"][key]["status"], "BLOCKED")
-            self.assertIn("personal_verifier", report["checks"][key]["reason"])
-            self.assertIn("saved_state", report["checks"][key]["reason"])
-        self.assertTrue(report["snapshots"]["before"]["personal_verifier_present"])
-        self.assertFalse(report["snapshots"]["after_rollback"]["personal_verifier_present"])
-        self.assertEqual(report["snapshots"]["before"]["receipt"], report["snapshots"]["after_rollback"]["receipt"])
-        self.assertNotEqual(report["cache_roots"][probe.UPSTREAM], report["cache_roots"][probe.CANDIDATE])
-        self.assertFalse(FakeRunner.instances[-1].packages)
+        for stage in ("after_migration", "after_rollback"):
+            probe.preserved(report["snapshots"]["before"], report["snapshots"][stage])
+        self.assertEqual(report["negative_control"]["preservation"], "FAIL")
+        runner = FakeRunner.instances[-1]
+        self.assertFalse(runner.packages)
+        for market in (probe.UPSTREAM, probe.CANDIDATE):
+            plugin_id = "codex-orchestration@" + market
+            removals = [i for i, args in enumerate(runner.calls)
+                        if args[1:4] == ["plugin", "remove", plugin_id]]
+            self.assertTrue(removals)
+            if market == probe.UPSTREAM:
+                self.assertTrue(any(i > removals[0] and args[1:4] == ["plugin", "add", plugin_id]
+                                    for i, args in enumerate(runner.calls)))
+        marketplace_adds = [args for args in runner.calls if args[1:4] == ["plugin", "marketplace", "add"]]
+        self.assertEqual(len(marketplace_adds), 2)
+        self.assertTrue(all(args[4].startswith("http://127.0.0.1:43123/") for args in marketplace_adds))
+        self.assertTrue(any("clone" in args and "--bare" in args for args in runner.calls))
+        self.assertTrue(any("update-server-info" in args for args in runner.calls))
+        edits = [json.loads(args[-1]) for args in runner.calls if str(self.root / "cas.py") in args]
+        self.assertTrue(edits)
+        self.assertTrue(all(edit["keyPath"] in probe.CAS_KEYS for batch in edits for edit in batch))
+        self.assertFalse(any(args[1:3] == ["plugin", "disable"] for args in runner.calls))
+        positive = [args for args in runner.calls if probe.CONFIGURATOR in " ".join(args)
+                    and "--disable" in args]
+        self.assertEqual(len(positive), 2)  # Only drift and negative profiles.
+        self.assertTrue(all(any(name in " ".join(args) for name in ("drift-profile", "negative-control"))
+                            for args in positive))
+
+    def test_measured_remove_preservation_loss_fails_positive_path_and_rollback(self):
+        report = self.report()
+        original_json = FakeRunner.json
+        def losing_remove(runner, args):
+            result = original_json(runner, args)
+            if args[1:3] == ["plugin", "remove"]:
+                path = Path(runner.env["CODEX_HOME"]) / "config.toml"
+                path.write_text(path.read_text().replace("plugin-setting-preserved", "lost"))
+            return result
+        with mock.patch.object(probe, "Runner", FakeRunner), \
+                mock.patch.object(FakeRunner, "json", losing_remove), \
+                mock.patch.object(probe, "source_fixture", minimal_sources), \
+                mock.patch.object(probe, "serve_git") as server:
+            server.return_value.__enter__.return_value = 43123
+            probe.qualify(self.root, Path("/never-executed"), report)
+        self.assertEqual(report["checks"]["preservation"]["status"], "FAIL")
+        self.assertEqual(report["checks"]["rollback_preservation"]["status"], "FAIL")
+        self.assertEqual(report["checks"]["rollback"]["status"], "PASS")
+        self.assertIn("unowned", report["checks"]["preservation"]["reason"])
+
+    def test_late_native_or_server_failure_cannot_report_pass(self):
+        def late_failure(temp, codex, report):
+            for name in report["checks"]:
+                report["checks"][name] = {"status": "PASS"}
+            (temp / "audit.jsonl").write_text('{"cli":"--version"}\n')
+            raise probe.Blocked("owned loopback server did not shut down")
+        target = self.root / "late-failure.json"
+        with mock.patch.object(probe, "qualify", side_effect=late_failure), redirect_stdout(io.StringIO()):
+            status = probe.main(["--native", "--codex-bin", sys.executable, "--report", str(target)])
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(target.read_text())["qualification"], "BLOCKED")
 
     def test_missing_mandatory_native_upgrade_is_explicit_blocker(self):
         FakeRunner.fail_upgrade = True
         report = self.report()
         with mock.patch.object(probe, "Runner", FakeRunner), \
-                mock.patch.object(probe, "source_fixture", minimal_sources):
+                mock.patch.object(probe, "source_fixture", minimal_sources), \
+                mock.patch.object(probe, "serve_git") as server:
+            server.return_value.__enter__.return_value = 43123
             probe.qualify(self.root, Path("/never-executed"), report)
         self.assertEqual(report["checks"]["upstream_lifecycle"]["status"], "BLOCKED")
         self.assertIn("upgrade unavailable", report["checks"]["upstream_lifecycle"]["reason"])

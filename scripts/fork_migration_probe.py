@@ -10,6 +10,10 @@ agent, or model execution is permitted. Missing containment is a blocker.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 import hashlib
 import json
 import os
@@ -23,7 +27,7 @@ import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-BASELINE = "5ac2b355ffd42f7b857d1301fec43a6f93744c05"
+BASELINE = "dd019daa12d33d91fc393a4de17ae4b833768254"
 UPSTREAM = "codex-orchestration"
 CANDIDATE = "insolvent-capital-codex-orchestration"
 PACKAGE = "plugins/codex-orchestration"
@@ -33,15 +37,19 @@ STATE = ".codex-orchestration-routing.json"
 PERSONAL = "Owner personal Verifier extension: fixture-only unique paragraph 8e37."
 RECEIPT = "Synthetic owner policy receipt 7f19; never production authority."
 REQUIRED = (
-    "containment", "source", "native_version", "upstream_lifecycle",
+    "containment", "loopback_transport", "source", "native_version", "upstream_lifecycle",
     "candidate_lifecycle", "identity_and_skills", "registered_fixture",
     "unregistered_drift", "migration", "preservation", "rollback",
-    "rollback_preservation", "cleanup_primitives", "bare_fable_exclusion", "no_model_calls",
+    "rollback_preservation", "disable_negative_control", "cleanup_primitives", "bare_fable_exclusion", "no_model_calls",
 )
 
 
 class Blocked(RuntimeError):
     pass
+
+
+class Failed(Blocked):
+    """A measured preservation violation, distinct from an unavailable primitive."""
 
 
 def digest(value: bytes) -> str:
@@ -102,7 +110,7 @@ def child_env(temp: Path) -> dict[str, str]:
         "PATH": str(temp / "bin") + ":/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C", "LC_ALL": "C", "PYTHONDONTWRITEBYTECODE": "1",
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "file",
+        "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "file:http",
     }
     for key, name in (("HOME", "home"), ("CODEX_HOME", "codex"),
                       ("XDG_CONFIG_HOME", "xdg"), ("TMPDIR", "tmp"),
@@ -115,10 +123,15 @@ def child_env(temp: Path) -> dict[str, str]:
 
 # This wrapper is a dispatch firewall, including configurator AppServer traffic.
 # It never interprets a model name as permission to invoke it.
-GUARD = r'''import json, subprocess, sys, threading
+GUARD = r'''import json, os, subprocess, sys, threading
 from pathlib import Path
 REAL = __REAL__
 AUDIT = Path(__AUDIT__)
+SOURCES = __SOURCES__
+CAS_KEYS = __CAS_KEYS__
+CONTROL = Path(os.environ.get("CODEX_HOME", "")).parent == AUDIT.parent and Path(os.environ.get("CODEX_HOME", "")).name in {"negative-control", "drift-profile"}
+CONTROL_KEYS = {"features.multi_agent_v2." + key for key in
+                ("multi_agent_mode_hint_text", "usage_hint_text", "hide_spawn_agent_metadata", "tool_namespace")}
 ALLOWED_RPC = {"initialize", "initialized", "config/read", "config/batchWrite", "model/list"}
 def log(event):
     with AUDIT.open("a") as f:
@@ -133,21 +146,22 @@ def allowed(args):
         ids = {"codex-orchestration@codex-orchestration",
                "codex-orchestration@insolvent-capital-codex-orchestration"}
         names = {"codex-orchestration", "insolvent-capital-codex-orchestration"}
-        if len(args) == 4 and args[1] in {"add", "disable", "remove"}:
+        if len(args) == 4 and args[1] in {"add", "remove"}:
             return args[2] in ids and args[3] == "--json"
         if args[1:2] == ["marketplace"]:
             if len(args) == 5 and args[2] in {"upgrade", "remove"}:
                 return args[3] in names and args[4] == "--json"
             if len(args) == 7 and args[2] == "add" and args[4:] == ["--ref", "main", "--json"]:
-                source = Path(args[3])
-                return source.parent == AUDIT.parent and source.name in names
+                return args[3] in SOURCES
         return False
-    rest = list(args)
-    while rest[:1] == ["-c"] and len(rest) >= 2:
-        if not rest[1].startswith("features.multi_agent_v2."):
-            return False
-        rest = rest[2:]
-    return rest == ["features", "list"]
+    capability = [
+        "-c", "features.multi_agent_v2.hide_spawn_agent_metadata=false",
+        "-c", 'features.multi_agent_v2.tool_namespace="agents"',
+        "-c", 'features.multi_agent_v2.multi_agent_mode_hint_text="CODEX_ORCHESTRATION_CAPABILITY_PROBE"',
+        "-c", 'features.multi_agent_v2.usage_hint_text="CODEX_ORCHESTRATION_CAPABILITY_PROBE"',
+        "features", "list",
+    ]
+    return args == capability
 if not allowed(args):
     log({"denied": "cli_dispatch"})
     sys.exit(97)
@@ -167,10 +181,31 @@ def forward():
             if method not in ALLOWED_RPC:
                 log({"denied": "rpc_dispatch"})
                 return
+            if method == "config/batchWrite":
+                params = request.get("params", {})
+                edits = params.get("edits")
+                if (set(params) != {"edits", "expectedVersion", "reloadUserConfig"}
+                    or not isinstance(params.get("expectedVersion"), str)
+                    or not params["expectedVersion"]
+                    or params.get("reloadUserConfig") is not True
+                    or not isinstance(edits, list) or not edits
+                    or len({e.get("keyPath") for e in edits if isinstance(e, dict)}) != len(edits)
+                    or any(not isinstance(e, dict)
+                           or set(e) != {"keyPath", "value", "mergeStrategy"}
+                           or e.get("keyPath") not in (CAS_KEYS | CONTROL_KEYS if CONTROL else CAS_KEYS)
+                           or not (e.get("keyPath") in CAS_KEYS and type(e.get("value")) is bool or
+                                   CONTROL and e.get("value") is None and
+                                   (e.get("keyPath") in CONTROL_KEYS or
+                                    e.get("keyPath") in {key for key in CAS_KEYS
+                                                        if ".mcp_servers." in key and
+                                                        '"codex-orchestration@codex-orchestration"' in key}))
+                           or e.get("mergeStrategy") != "replace" for e in edits)):
+                    log({"denied": "cas_scope"})
+                    return
             log({"rpc": method})
             p.stdin.write(line.encode())
             p.stdin.flush()
-    except (ValueError, BrokenPipeError, OSError):
+    except (ValueError, TypeError, AttributeError, KeyError, BrokenPipeError, OSError):
         log({"denied": "malformed_rpc"})
     finally:
         try:
@@ -182,31 +217,146 @@ sys.exit(p.wait())
 '''
 
 
-def write_guard(temp: Path, codex: Path) -> Path:
+FABLE_SERVERS = ("fable-advisor-python3", "fable-advisor-python")
+
+
+def plugin_key(market: str, server: str | None = None) -> str:
+    if market not in (UPSTREAM, CANDIDATE) or server is not None and server not in FABLE_SERVERS:
+        raise Blocked("unknown fixture namespace/server")
+    base = "plugins." + json.dumps("codex-orchestration@" + market)
+    return base + (".mcp_servers." + json.dumps(server) if server else "") + ".enabled"
+
+
+CAS_KEYS = {plugin_key(market, server) for market in (UPSTREAM, CANDIDATE)
+            for server in (None, *FABLE_SERVERS)}
+
+
+def fixture_urls(port: int) -> tuple[str, ...]:
+    require(type(port) is int and 0 < port < 65536, "invalid owned loopback port")
+    return tuple(f"http://127.0.0.1:{port}/{market}.git" for market in (UPSTREAM, CANDIDATE))
+
+
+@contextmanager
+def serve_git(temp: Path):
+    """Root owns one ephemeral server; children may contact only its pinned port."""
+    directory = owned(temp / "http", temp)
+    directory.mkdir()
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def permitted(self):
+            path, separator, query = self.path.partition("?")
+            permitted_query = (not separator or
+                               query == "service=git-upload-pack" and path.endswith("/info/refs"))
+            return (any(path.startswith("/" + m + ".git/") for m in (UPSTREAM, CANDIDATE))
+                    and ".." not in path and "%" not in path and permitted_query)
+
+        def do_GET(self):
+            if not self.permitted():
+                self.send_error(403)
+                return
+            super().do_GET()
+
+        def do_HEAD(self):
+            if not self.permitted():
+                self.send_error(403)
+                return
+            super().do_HEAD()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(directory)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        require(not thread.is_alive(), "owned loopback server did not shut down")
+
+
+def write_guard(temp: Path, codex: Path, sources: tuple[str, ...] = ()) -> Path:
+    if sources:
+        from urllib.parse import urlsplit
+        try:
+            port = urlsplit(sources[0]).port
+            require(sources == fixture_urls(port), "non-owned fixture transport URL")
+        except (ValueError, TypeError) as exc:
+            raise Blocked("invalid fixture transport URL") from exc
     bindir = temp / "bin"
     bindir.mkdir()
     guard = bindir / "codex"
     guard.write_text(f"#!{sys.executable}\n" + GUARD.replace(
-        "__REAL__", repr(str(codex))).replace("__AUDIT__", repr(str(temp / "audit.jsonl"))))
+        "__REAL__", repr(str(codex))).replace("__AUDIT__", repr(str(temp / "audit.jsonl"))).replace(
+        "__SOURCES__", repr(sources)).replace("__CAS_KEYS__", repr(CAS_KEYS)))
     guard.chmod(0o700)
-    # Any accidental Claude dispatch is refused, including --print/model calls.
+    # Synthetic metadata only; every inference shape, including --print, fails closed.
     claude = bindir / "claude"
-    claude.write_text(f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n"
-                      f"p = Path({str(temp / 'claude-denied')!r})\n"
-                      "p.write_text('dispatch refused')\nsys.exit(97)\n")
+    claude.write_text(f"#!{sys.executable}\n" + CLAUDE_SHIM.replace(
+        "__AUDIT__", repr(str(temp / "claude-denied"))))
     claude.chmod(0o700)
     return guard
 
 
+CLAUDE_SHIM = r'''import json, sys
+from pathlib import Path
+args = sys.argv[1:]
+if args in (["auth", "status"], ["auth", "status", "--json"]):
+    print(json.dumps({"loggedIn": True, "authMethod": "claude.ai",
+                      "apiProvider": "firstParty", "subscriptionType": "max"}))
+elif args == ["--version"]:
+    print("2.1.219 (Claude Code)")
+elif args == ["--help"]:
+    print("--print --model --effort <level> (low, medium, high, xhigh, max) "
+          "--safe-mode --tools --permission-mode --no-session-persistence "
+          "--prompt-suggestions --output-format --json-schema --system-prompt")
+else:
+    Path(__AUDIT__).write_text("inference refused")
+    sys.exit(97)
+'''
+
+
+# Executed only as an OS-contained child. Uses the shipped native AppServer client.
+CAS_HELPER = r'''import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import configure_native_routing as native
+edits = json.loads(sys.argv[4])
+with native.AppServer(Path(sys.argv[2]), Path(sys.argv[3])) as app:
+    read = app.request("config/read", {"includeLayers": True, "cwd": str(Path.cwd())})
+    config, version = native._user_layer(read)
+    if not version:
+        raise RuntimeError("required native CAS version unavailable")
+    result = native._batch_write(app, edits, version, reload_user_config=True)
+    if result.get("status") != "ok":
+        raise RuntimeError("native CAS failed")
+    after = app.request("config/read", {"includeLayers": True, "cwd": str(Path.cwd())})
+    verified, _ = native._user_layer(after)
+    for edit in edits:
+        # Explicit paths are generated by the root; no generic key parser.
+        import re
+        segments = re.findall(r'"([^"]+)"|([^.]+)', edit["keyPath"])
+        parts = [quoted or bare for quoted, bare in segments]
+        if native.nested_get(verified, *parts) is not edit["value"]:
+            raise RuntimeError("native CAS readback mismatch")
+print(json.dumps({"status": "ok"}))
+'''
+
+
 class Runner:
-    def __init__(self, temp: Path, env: dict[str, str], report: dict):
+    def __init__(self, temp: Path, env: dict[str, str], report: dict, port: int | None = None):
         self.temp, self.env, self.report = temp, env, report
         sandbox = Path("/usr/bin/sandbox-exec")
         if sys.platform != "darwin" or not sandbox.is_file():
             raise Blocked("mandatory sandbox-exec network/write containment unavailable")
         profile = temp / "child.sb"
+        endpoint = ""
+        if port is not None:
+            fixture_urls(port)
+            endpoint = f' (allow network-outbound (remote ip "127.0.0.1:{port}")) '
         profile.write_text('(version 1) (allow default) (deny network*) '
-                           '(deny file-write*) (allow file-write* (subpath '
+                           + endpoint + '(deny file-write*) (allow file-write* (subpath '
                            + json.dumps(str(temp)) + ') (literal "/dev/null"))')
         self.prefix = [str(sandbox), "-f", str(profile)]
 
@@ -266,7 +416,8 @@ def check(report: dict, name: str, operation) -> bool:
     try:
         operation()
     except Exception as exc:
-        report["checks"][name] = {"status": "BLOCKED", "reason": failure_reason(exc)}
+        report["checks"][name] = {"status": "FAIL" if isinstance(exc, Failed) else "BLOCKED",
+                                  "reason": failure_reason(exc)}
         return False
     report["checks"][name] = {"status": "PASS"}
     return True
@@ -344,7 +495,7 @@ def source_fixture(runner: Runner, report: dict) -> dict[str, Path]:
     return roots
 
 
-def seed_policy(home: Path, *, drift: bool = False) -> None:
+def seed_policy(home: Path, *, drift: bool = False, active: bool = False) -> None:
     """Fixture construction, not migration: register managed extension bytes together."""
     mode = "[codex-orchestration managed-policy v1]\nSynthetic existing policy.\n\n" + PERSONAL
     usage = "[codex-orchestration managed-policy v1]\nSynthetic usage.\n\n" + PERSONAL
@@ -358,6 +509,12 @@ def seed_policy(home: Path, *, drift: bool = False) -> None:
                      for key in ("mode", "usage", "metadata", "namespace")},
         "scalar_origin": None, "managed_feature": None,
     }
+    if active:
+        state["advisor"] = {"kind": "fable", "model": "claude-fable-5", "effort": "high",
+                            "server": "fable-advisor-python3"}
+        state["managed"]["mcp"] = dict(zip(FABLE_SERVERS, (True, False)))
+        state["previous"]["mcp"] = {server: {"known": True, "present": False}
+                                     for server in FABLE_SERVERS}
     for name in (STATE, "config.toml", "policy-receipt.txt"):
         owned(home / name, home)
     config = home / "config.toml"
@@ -375,6 +532,17 @@ def seed_policy(home: Path, *, drift: bool = False) -> None:
         '[features.multi_agent_v2]\nhide_spawn_agent_metadata = false\n'
         'tool_namespace = "agents"\nmulti_agent_mode_hint_text = ' + json.dumps(mode)
         + '\nusage_hint_text = ' + json.dumps(usage) + '\n' + existing)
+    with config.open("a") as stream:
+        stream.write('\n[mcp_servers.claude-verifier-python3]\ncommand = "fixture-verifier-never-run"\nenabled = false\n')
+        if active:
+            for server, enabled in zip(FABLE_SERVERS, ("true", "false")):
+                stream.write("\n[plugins." + json.dumps("codex-orchestration@" + UPSTREAM)
+                             + ".mcp_servers." + json.dumps(server) + "]\nenabled = " + enabled + "\n")
+        for market in (UPSTREAM, CANDIDATE):
+            stream.write("\n[plugins." + json.dumps("codex-orchestration@" + market)
+                         + '.probe_unowned]\nsentinel = "plugin-setting-preserved"\n')
+        stream.write('\n[plugins."unowned@fixture"]\nenabled = false\n'
+                     'opaque = ["preserve", "all", "bytes as values"]\n')
     (home / "policy-receipt.txt").write_text(RECEIPT)
 
 
@@ -389,31 +557,63 @@ def snapshot(home: Path) -> dict:
     extension = [[paragraph for paragraph in text.split("\n\n")
                   if "Owner personal Verifier extension:" in paragraph] for text in paragraphs]
     state = home / STATE
+    unowned = json.loads(json.dumps(config))
+    plugins = unowned.get("plugins", {})
+    for market in (UPSTREAM, CANDIDATE):
+        settings = plugins.get("codex-orchestration@" + market, {})
+        settings.pop("enabled", None)
+        servers = settings.get("mcp_servers", {})
+        for server in FABLE_SERVERS:
+            item = servers.get(server, {})
+            item.pop("enabled", None)
+            if not item:
+                servers.pop(server, None)
+        if not servers:
+            settings.pop("mcp_servers", None)
+        if not settings:
+            plugins.pop("codex-orchestration@" + market, None)
+    if not plugins:
+        unowned.pop("plugins", None)
     return {
+        "mode_usage": [digest(text.encode()) for text in paragraphs],
+        "verifier_registration": digest(json.dumps(config.get("mcp_servers", {}).get("claude-verifier-python3"), sort_keys=True).encode()),
         "personal_verifier": digest(json.dumps(extension).encode()),
         "personal_verifier_present": all(extension),
         "receipt": digest((home / "policy-receipt.txt").read_bytes()),
         "saved_state": digest(state.read_bytes()) if state.exists() else None,
-        "unowned": digest(json.dumps({"model": config.get("model"),
-                                      "probe_unowned": config.get("probe_unowned")},
-                                     sort_keys=True).encode()),
+        "unowned": digest(json.dumps(unowned, sort_keys=True).encode()),
         "config": digest(raw),
     }
 
 
 def preserved(before: dict, after: dict) -> None:
-    lost = [key for key in ("personal_verifier", "receipt", "saved_state", "unowned")
+    lost = [key for key in ("mode_usage", "personal_verifier", "receipt", "saved_state", "verifier_registration", "unowned")
             if before[key] != after[key]]
-    require(not lost, "supported native path changed/dropped synthetic " + ", ".join(lost))
+    if lost:
+        raise Failed("supported native path changed/dropped synthetic " + ", ".join(lost))
 
 
 def qualify(temp: Path, codex: Path, report: dict) -> None:
+    with serve_git(temp) as port:
+        qualify_fixture(temp, codex, report, port)
+    report["checks"]["loopback_transport"] = {
+        "status": "PASS", "reason": "root-owned loopback server shut down and closed normally"}
+
+
+def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
     env = child_env(temp)
-    guard = write_guard(temp, codex)
-    runner = Runner(temp, env, report)
+    guard = write_guard(temp, codex, fixture_urls(port))
+    runner = Runner(temp, env, report, port)
     runner.run(["/usr/bin/true"])
-    report["checks"]["containment"] = {"status": "PASS", "reason": "OS denies network and writes outside fixture"}
+    report["checks"]["containment"] = {"status": "PASS", "reason": "OS denies network except exact owned loopback endpoint and writes outside fixture"}
     roots = source_fixture(runner, report)
+    remotes = {}
+    for market, publisher in roots.items():
+        remote = temp / "http" / (market + ".git")
+        runner.run(["/usr/bin/git", "clone", "--bare", "--no-local", str(publisher), str(remote)])
+        runner.run(["/usr/bin/git", "--git-dir=" + str(remote), "update-server-info"])
+        remotes[market] = remote
+    sources = dict(zip((UPSTREAM, CANDIDATE), fixture_urls(port)))
     report["checks"]["source"] = {"status": "PASS"}
     version = runner.run([str(guard), "--version"]).stdout.strip()
     require(version.startswith("codex-cli ") and len(version) < 200
@@ -425,17 +625,22 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
 
     def no_bare_fable():
         report["checks"]["bare_fable_exclusion"] = {
-            "status": "BLOCKED", "reason": "checking fixture defaults and native config overrides"}
+            "status": "BLOCKED", "reason": "checking distribution and synthetic bare Fable exclusion"}
         config_path = home_root / "config.toml"
         config = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+        active = []
+        bare_enabled = 0
         for market in (UPSTREAM, CANDIDATE):
             settings = config.get("plugins", {}).get(f"codex-orchestration@{market}", {})
+            if settings.get("enabled") is True:
+                active.append(market)
             overrides = settings.get("mcp_servers", {})
-            require(not any(server.startswith("fable-advisor-") and value.get("enabled") is True
-                            for server, value in overrides.items()),
-                    "unexpected enabled bare Fable override in disposable profile")
+            bare_enabled += overrides.get(FABLE_SERVERS[0], {}).get("enabled") is True
+            require(not overrides.get("fable-advisor-python", {}).get("enabled", False),
+                    "secondary bare Fable launcher enabled")
+        require(len(active) <= 1 and bare_enabled <= 1, "multiple distributions or bare Fable launchers enabled")
         report["checks"]["bare_fable_exclusion"] = {
-            "status": "PASS", "reason": "fixture defaults disabled; config overrides checked between native operations"}
+            "status": "PASS", "reason": "at most one distribution and one synthetic bare Fable launcher enabled"}
 
     def cli(*args):
         no_bare_fable()
@@ -443,13 +648,26 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
         no_bare_fable()
         return result
 
+    cas_script = temp / "cas.py"
+    cas_script.write_text(CAS_HELPER)
+
+    def cas(values):
+        require(bool(values) and all(key in CAS_KEYS and type(value) is bool
+                                    for key, value in values.items()), "CAS outside explicit fixture scope")
+        edits = [{"keyPath": key, "value": value, "mergeStrategy": "replace"}
+                 for key, value in values.items()]
+        result = runner.run([sys.executable, "-B", str(cas_script),
+                             str(roots[UPSTREAM] / PACKAGE / Path(CONFIGURATOR).parent),
+                             str(guard), str(home_root), json.dumps(edits)])
+        require(json.loads(result.stdout).get("status") == "ok", "native CAS unsupported")
+
     def disable(market):
-        cli("disable", f"codex-orchestration@{market}")
+        cas({plugin_key(market): False})
         values = cli("list").get("installed", [])
         matches = [e for e in values if isinstance(e, dict)
                    and e.get("pluginId") == f"codex-orchestration@{market}"]
         require(len(matches) == 1 and matches[0].get("enabled") is False,
-                "native disable did not disable the distribution")
+                "native CAS did not disable distribution")
 
     def entry(market):
         values = cli("list").get("installed")
@@ -461,7 +679,7 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
         return matches[0]
 
     def install(market):
-        cli("marketplace", "add", str(roots[market]), "--ref", "main")
+        cli("marketplace", "add", sources[market], "--ref", "main")
         result = cli("add", f"codex-orchestration@{market}")
         path = owned(Path(result["installedPath"]), home_root)
         expected = "0.9.5" if market == CANDIDATE else "0.9.4"
@@ -478,18 +696,28 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
                       "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
                       "commit", "--quiet", "-m", "Synthetic version upgrade"]):
             runner.run(["/usr/bin/git", *args], cwd=roots[market])
+        runner.run(["/usr/bin/git", "--git-dir=" + str(remotes[market]), "fetch",
+                    str(roots[market]), "main:main"])
+        runner.run(["/usr/bin/git", "--git-dir=" + str(remotes[market]), "update-server-info"])
+        resolved = runner.run(["/usr/bin/git", "-C", str(roots[market]), "rev-parse", "HEAD"]).stdout.strip()
         upgrade = cli("marketplace", "upgrade", market)
         require(upgrade.get("errors") == [] and upgrade.get("selectedMarketplaces") == [market],
                 "mandatory marketplace upgrade unavailable or failed")
         refreshed = cli("add", f"codex-orchestration@{market}")
         require(refreshed.get("version") == expected and entry(market).get("version") == expected,
                 "post-upgrade add did not discover expected version")
+        provenance = entry(market).get("marketplaceSource", {})
+        require(provenance.get("sourceType") == "git" and provenance.get("source") == sources[market]
+                and provenance.get("ref") == "main" and provenance.get("resolvedRef") == resolved,
+                "native inventory Git source/ref/resolvedRef mismatch")
+        report.setdefault("git_provenance", {})[market] = provenance
         installed[market] = owned(Path(refreshed["installedPath"]), home_root)
         require(installed[market].is_dir(), "refreshed installedPath missing")
         require(path != installed[market], "upgrade reused prior version cache root")
 
     if not check(report, "upstream_lifecycle", lambda: install(UPSTREAM)):
         return
+    disable(UPSTREAM)
     if not check(report, "candidate_lifecycle", lambda: install(CANDIDATE)):
         return
 
@@ -520,8 +748,9 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
     home = Path(env["CODEX_HOME"])
     # Both packages are safe disabled-by-default; only one distribution stays enabled.
     disable(CANDIDATE)
-    seed_policy(home)
-    report["fixture_construction"] = "synthetic schema-5 registered extension: config and managed state seeded together; no native Verifier field"
+    cas({plugin_key(UPSTREAM): True})
+    seed_policy(home, active=True)
+    report["fixture_construction"] = "synthetic schema-5 active Fable fixture: config and managed state seeded together; synthetic auth/capability shim refuses every inference; personal Verifier registration never dispatched"
     before = snapshot(home)
     report["snapshots"] = {"before": before}
 
@@ -556,23 +785,53 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
         report["snapshots"]["drift_after"] = snapshot(drift_home)
     check(report, "unregistered_drift", drift_check)
 
+    def negative_control():
+        control = temp / "negative-control"
+        control.mkdir()
+        seed_policy(control, active=True)
+        prior = snapshot(control)
+        routing(UPSTREAM, "--disable", "--apply",
+                child_environment=dict(env, CODEX_HOME=str(control)))
+        after = snapshot(control)
+        require(prior["mode_usage"] != after["mode_usage"]
+                and prior["saved_state"] != after["saved_state"],
+                "negative disable control did not measure restoration loss")
+        report["negative_control"] = {"classification": "NEGATIVE",
+                                      "before": prior, "after": after,
+                                      "preservation": "FAIL"}
+    check(report, "disable_negative_control", negative_control)
+
+    def remove(market):
+        cli("remove", f"codex-orchestration@{market}")
+        entries = cli("list").get("installed")
+        require(isinstance(entries, list) and
+                not any(e.get("pluginId") == f"codex-orchestration@{market}" for e in entries),
+                "native remove left distribution installed")
+
+    def move(old, new):
+        cas({plugin_key(old): False,
+             **{plugin_key(old, server): False for server in FABLE_SERVERS}})
+        remove(old)
+        cas({plugin_key(new, server): server == FABLE_SERVERS[0] for server in FABLE_SERVERS})
+        result = cli("add", f"codex-orchestration@{new}")
+        installed[new] = owned(Path(result["installedPath"]), home_root)
+        require(installed[new].is_dir(), "native re-add installedPath unavailable")
+        inventory = entry(new)
+        require(inventory.get("version") == ("0.9.5" if new == CANDIDATE else "0.9.4")
+                and inventory.get("marketplaceSource") == report["git_provenance"][new],
+                "native re-add changed fixture version or Git provenance")
+        result = routing(new, "--status", "--require-effective")
+        require("Native policy: installed and effective" in result.stdout,
+                "moved registered namespace is not effective")
+
     def migrate():
-        routing(UPSTREAM, "--disable", "--apply")
-        report["snapshots"]["after_disable"] = snapshot(home)
-        disable(UPSTREAM)
-        cli("add", f"codex-orchestration@{CANDIDATE}")
-        routing(CANDIDATE, "--executor-model", "gpt-5.6-luna", "--executor-effort", "high", "--apply")
+        move(UPSTREAM, CANDIDATE)
     check(report, "migration", migrate)
     report["snapshots"]["after_migration"] = snapshot(home)
     check(report, "preservation", lambda: preserved(before, snapshot(home)))
 
     def rollback():
-        routing(CANDIDATE, "--disable", "--apply")
-        disable(CANDIDATE)
-        cli("remove", f"codex-orchestration@{CANDIDATE}")
-        cli("add", f"codex-orchestration@{UPSTREAM}")
-        routing(UPSTREAM, "--executor-model", "gpt-5.6-luna", "--executor-effort", "high", "--apply")
-        entry(UPSTREAM)
+        move(CANDIDATE, UPSTREAM)
     check(report, "rollback", rollback)
     report["snapshots"]["after_rollback"] = snapshot(home)
     check(report, "rollback_preservation", lambda: preserved(before, snapshot(home)))
@@ -583,7 +842,7 @@ def qualify(temp: Path, codex: Path, report: dict) -> None:
             entries = cli("list").get("installed", [])
             if any(e.get("pluginId") == f"codex-orchestration@{market}" for e in entries):
                 disable(market)
-                cli("remove", f"codex-orchestration@{market}")
+                remove(market)
             cli("marketplace", "remove", market)
         require(not cli("list").get("installed"), "native removal left installed fixtures")
     check(report, "cleanup_primitives", cleanup)
@@ -600,13 +859,13 @@ def audit_result(temp: Path, report: dict) -> None:
     denied = any("denied" in e for e in events) or (temp / "claude-denied").exists()
     report["no_model_calls"] = {
         "cli_and_rpc_dispatch_allowlisted": True,
-        "network_denied_by_os": report["checks"]["containment"]["status"] == "PASS",
+        "network_restricted_by_os": report["checks"]["containment"]["status"] == "PASS",
         "audit_sha256": digest(json.dumps(events, sort_keys=True).encode()),
         "rpc_methods": sorted({e["rpc"] for e in events if "rpc" in e}),
         "denied_dispatch": denied, "credential_environment": "allowlist; no inherited auth/config",
     }
     report["checks"]["no_model_calls"] = {
-        "status": "PASS" if events and not denied and report["no_model_calls"]["network_denied_by_os"] else "BLOCKED",
+        "status": "PASS" if events and not denied and report["no_model_calls"]["network_restricted_by_os"] else "BLOCKED",
         "reason": "guarded metadata/config operations only; no inference authority",
     }
 
@@ -635,12 +894,13 @@ def main(argv=None) -> int:
         "schema_version": 1, "qualification": "BLOCKED", "baseline": BASELINE,
         "tier": "FULL", "execution_route": "direct-supervised",
         "provenance": "LOCAL_FIXTURE", "commands": [],
-        "transport": "owned local Git fixture paths; no HTTPS fork provenance",
+        "transport": "owned loopback HTTP Git fixture; no HTTPS fork provenance",
         "fixture_versions": {UPSTREAM: ["0.9.3", "0.9.4"], CANDIDATE: ["0.9.4", "0.9.5"]},
         "cli": {"path": str(codex)},
         "checks": {key: {"status": "BLOCKED", "reason": "not reached; prerequisite unavailable"} for key in REQUIRED},
         "later_gates": [{"status": "BLOCKED", "gate": "exact HTTPS fork provenance",
-                         "source": "https://github.com/InsolventCapital/Codex-Orchestration.git"}],
+                         "source": "https://github.com/InsolventCapital/Codex-Orchestration.git"},
+                        {"status": "BLOCKED", "gate": "real profile migration/release/enforcement"}],
         "scope": "disposable local qualification only; no live migration or release",
     }
     try:
@@ -655,8 +915,11 @@ def main(argv=None) -> int:
             finally:
                 audit_result(temp, report)
         report["owned_temp_cleaned"] = not temp.exists()
-        if all(value["status"] == "PASS" for value in report["checks"].values()) and report["owned_temp_cleaned"]:
-            report["qualification"] = "QUALIFIED"
+        if any(value["status"] == "FAIL" for value in report["checks"].values()):
+            report["qualification"] = "FAIL"
+        elif (not report.get("blocker") and report["owned_temp_cleaned"]
+              and all(value["status"] == "PASS" for value in report["checks"].values())):
+            report["qualification"] = "PASS"
     except Exception as exc:
         report["blocker"] = failure_reason(exc)
     finally:
@@ -665,7 +928,7 @@ def main(argv=None) -> int:
             stream.write("\n")
     print(json.dumps({"qualification": report["qualification"], "report": str(args.report),
                       "provenance": "LOCAL_FIXTURE"}))
-    return 0 if report["qualification"] == "QUALIFIED" else 1
+    return 0 if report["qualification"] == "PASS" else 1
 
 
 if __name__ == "__main__":
