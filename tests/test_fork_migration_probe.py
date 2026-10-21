@@ -49,6 +49,11 @@ class FakeRunner:
 
     def run(self, args, **kwargs):
         self.calls.append(args)
+        if "--show-toplevel" in args:
+            return subprocess.CompletedProcess(args, 0, args[args.index("-C") + 1] + "\n", "")
+        if "remote.origin.url" in args:
+            market = Path(args[args.index("-C") + 1]).name
+            return subprocess.CompletedProcess(args, 0, self.sources[market] + "\n", "")
         if "rev-parse" in args:
             return subprocess.CompletedProcess(args, 0, "a" * 40 + "\n", "")
         if str(self.temp / "cas.py") in args:
@@ -100,18 +105,25 @@ class FakeRunner:
         market = plugin_id.split("@")[1]
         if args[0] == "remove":
             self.packages.pop(plugin_id, None)
+            config_file = Path(self.env["CODEX_HOME"]) / "config.toml"
+            config = tomllib.loads(config_file.read_text())
+            config.get("plugins", {}).pop(plugin_id, None)
+            config_file.write_text(encode_toml(config))
             return {}
         source = self.temp / market / probe.PACKAGE
         version = json.loads((source / ".codex-plugin/plugin.json").read_text())["version"]
         dest = self.temp / "codex" / "cache" / market / version
         if not dest.exists():
             shutil.copytree(source, dest)
+        cache = Path(self.env["CODEX_HOME"]) / ".tmp/marketplaces" / market
+        (cache / ".git").mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, cache / probe.PACKAGE, dirs_exist_ok=True)
         config_file = Path(self.env["CODEX_HOME"]) / "config.toml"
         config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
         config.setdefault("plugins", {}).setdefault(plugin_id, {})["enabled"] = True
         config_file.write_text(encode_toml(config))
-        entry = {"marketplaceSource": {"sourceType": "git", "source": self.sources[market],
-                                       "ref": "main", "resolvedRef": "a" * 40},
+        entry = {"marketplaceSource": {"sourceType": "git", "source": self.sources[market]},
+                 "source": {"path": str(cache / probe.PACKAGE)},
                  "pluginId": plugin_id, "version": version, "enabled": True,
                  "installedPath": str(dest)}
         self.packages[plugin_id] = entry
@@ -347,8 +359,18 @@ class ProbeTests(unittest.TestCase):
                 mock.patch.object(Path, "is_file", return_value=True):
             probe.Runner(self.root, env, self.report(), 43123)
         profile = (self.root / "child.sb").read_text()
-        self.assertIn('(remote ip "127.0.0.1:43123")', profile)
+        self.assertIn('(remote ip "localhost:43123")', profile)
+        self.assertNotIn('(remote ip "127.0.0.1:', profile)
+        self.assertNotIn('(remote ip "*', profile)
+        self.assertIn('(deny network*)', profile)
+        self.assertIn('(deny file-write*)', profile)
+        self.assertIn('(subpath ' + json.dumps(str(self.root)) + ')', profile)
         self.assertNotIn("(allow network*)", profile)
+        for port in (0, 65536, True, "43123"):
+            with mock.patch.object(probe.sys, "platform", "darwin"), \
+                    mock.patch.object(Path, "is_file", return_value=True), \
+                    self.assertRaises(probe.Blocked):
+                probe.Runner(self.root, env, self.report(), port)
         server = mock.Mock(server_port=43123)
         thread = mock.Mock()
         thread.is_alive.return_value = False
@@ -580,6 +602,12 @@ class ProbeTests(unittest.TestCase):
         for stage in ("after_migration", "after_rollback"):
             probe.preserved(report["snapshots"]["before"], report["snapshots"][stage])
         self.assertEqual(report["negative_control"]["preservation"], "FAIL")
+        self.assertEqual(report["remove_negative_control"]["preservation"], "FAIL")
+        self.assertIn("retain both installed packages", report["transition_semantics"])
+        for active, inventory in report["transition_inventory"].items():
+            self.assertEqual({entry["plugin_id"]: entry["enabled"] for entry in inventory}, {
+                "codex-orchestration@" + market: market == active
+                for market in (probe.UPSTREAM, probe.CANDIDATE)})
         runner = FakeRunner.instances[-1]
         self.assertFalse(runner.packages)
         for market in (probe.UPSTREAM, probe.CANDIDATE):
@@ -587,9 +615,16 @@ class ProbeTests(unittest.TestCase):
             removals = [i for i, args in enumerate(runner.calls)
                         if args[1:4] == ["plugin", "remove", plugin_id]]
             self.assertTrue(removals)
-            if market == probe.UPSTREAM:
-                self.assertTrue(any(i > removals[0] and args[1:4] == ["plugin", "add", plugin_id]
-                                    for i, args in enumerate(runner.calls)))
+            # Every install/re-add precedes destructive cleanup. Moving never removes.
+            self.assertTrue(all(i < removals[0] for i, args in enumerate(runner.calls)
+                                if args[1:4] == ["plugin", "add", plugin_id]))
+            self.assertEqual(report["git_provenance"][market], {
+                "sourceType": "git", "source": probe.fixture_urls(43123)[
+                    (probe.UPSTREAM, probe.CANDIDATE).index(market)]})
+            measured = report["git_measurements"][market]
+            self.assertEqual(measured["requested_ref"], "main")
+            self.assertEqual(measured["resolved_commit"], "a" * 40)
+            self.assertTrue(measured["package_hashes"])
         marketplace_adds = [args for args in runner.calls if args[1:4] == ["plugin", "marketplace", "add"]]
         self.assertEqual(len(marketplace_adds), 2)
         self.assertTrue(all(args[4].startswith("http://127.0.0.1:43123/") for args in marketplace_adds))
@@ -605,25 +640,91 @@ class ProbeTests(unittest.TestCase):
         self.assertTrue(all(any(name in " ".join(args) for name in ("drift-profile", "negative-control"))
                             for args in positive))
 
-    def test_measured_remove_preservation_loss_fails_positive_path_and_rollback(self):
+    def test_remove_deletes_plugin_local_unowned_settings_and_fails_preservation(self):
+        env = probe.child_env(self.root)
+        home = Path(env["CODEX_HOME"])
+        probe.seed_policy(home, active=True)
+        before = probe.snapshot(home)
+        runner = FakeRunner(self.root, env, self.report())
+        runner.json(["guard", "plugin", "remove", "codex-orchestration@" + probe.UPSTREAM, "--json"])
+        with self.assertRaisesRegex(probe.Failed, "unowned"):
+            probe.preserved(before, probe.snapshot(home))
+        config = tomllib.loads((home / "config.toml").read_text())
+        self.assertNotIn("codex-orchestration@" + probe.UPSTREAM, config["plugins"])
+
+    def test_native_cache_identity_and_path_mismatches_block(self):
+        for fault in ("origin", "HEAD", "root", "path", "symlink", "gitfile", "package",
+                      "source_type", "source_url", "missing_source", "short_commit"):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir=self.root) as raw:
+                temp = Path(raw)
+                env = probe.child_env(temp)
+                runner = FakeRunner(temp, env, self.report())
+                roots = minimal_sources(runner, runner.report)
+                market = probe.UPSTREAM
+                url = probe.fixture_urls(43123)[0]
+                runner.sources[market] = url
+                inventory = runner.json(["guard", "plugin", "add", "codex-orchestration@" + market, "--json"])
+                original_run = runner.run
+
+                def bad_run(args, **kwargs):
+                    result = original_run(args, **kwargs)
+                    if fault == "origin" and "remote.origin.url" in args:
+                        result.stdout = url + "/wrong\n"
+                    if fault == "HEAD" and args[-1] == "HEAD":
+                        result.stdout = "b" * 40 + "\n"
+                    if fault == "root" and "--show-toplevel" in args:
+                        result.stdout = str(temp) + "\n"
+                    return result
+
+                if fault == "path":
+                    inventory["source"]["path"] += "/../codex-orchestration"
+                if fault == "symlink":
+                    git_dir = Path(inventory["source"]["path"]).parents[1] / ".git"
+                    git_dir.rmdir()
+                    git_dir.symlink_to(temp)
+                if fault == "gitfile":
+                    git_dir = Path(inventory["source"]["path"]).parents[1] / ".git"
+                    git_dir.rmdir()
+                    git_dir.write_text("gitdir: /outside/fixture\n")
+                if fault == "package":
+                    (Path(inventory["source"]["path"]) / ".codex-plugin/plugin.json").write_text("{}")
+                if fault == "source_type":
+                    inventory["marketplaceSource"]["sourceType"] = "local"
+                if fault == "source_url":
+                    inventory["marketplaceSource"]["source"] = url + "/wrong"
+                if fault == "missing_source":
+                    del inventory["marketplaceSource"]
+                with mock.patch.object(runner, "run", side_effect=bad_run), self.assertRaises(probe.Blocked):
+                    probe.measure_git_cache(runner, Path(env["CODEX_HOME"]), market,
+                                            inventory, url, "a" * (7 if fault == "short_commit" else 40),
+                                            roots[market])
+
+    def test_readd_cache_head_mismatch_blocks_rollback(self):
         report = self.report()
         original_json = FakeRunner.json
-        def losing_remove(runner, args):
+        def changed_head_on_readd(runner, args):
             result = original_json(runner, args)
-            if args[1:3] == ["plugin", "remove"]:
-                path = Path(runner.env["CODEX_HOME"]) / "config.toml"
-                path.write_text(path.read_text().replace("plugin-setting-preserved", "lost"))
+            if args[1:4] == ["plugin", "add", "codex-orchestration@" + probe.UPSTREAM]:
+                adds = sum(call[1:4] == args[1:4] for call in runner.calls)
+                if adds == 3:
+                    original_run = runner.run
+
+                    def wrong_head(command, **kwargs):
+                        value = original_run(command, **kwargs)
+                        if command[-1] == "HEAD" and "/.tmp/marketplaces/" in " ".join(command):
+                            value.stdout = "b" * 40 + "\n"
+                        return value
+                    runner.run = wrong_head
             return result
         with mock.patch.object(probe, "Runner", FakeRunner), \
-                mock.patch.object(FakeRunner, "json", losing_remove), \
+                mock.patch.object(FakeRunner, "json", changed_head_on_readd), \
                 mock.patch.object(probe, "source_fixture", minimal_sources), \
                 mock.patch.object(probe, "serve_git") as server:
             server.return_value.__enter__.return_value = 43123
             probe.qualify(self.root, Path("/never-executed"), report)
-        self.assertEqual(report["checks"]["preservation"]["status"], "FAIL")
-        self.assertEqual(report["checks"]["rollback_preservation"]["status"], "FAIL")
-        self.assertEqual(report["checks"]["rollback"]["status"], "PASS")
-        self.assertIn("unowned", report["checks"]["preservation"]["reason"])
+        self.assertEqual(report["checks"]["preservation"]["status"], "PASS")
+        self.assertEqual(report["checks"]["rollback"]["status"], "BLOCKED")
+        self.assertIn("HEAD mismatch", report["checks"]["rollback"]["reason"])
 
     def test_late_native_or_server_failure_cannot_report_pass(self):
         def late_failure(temp, codex, report):

@@ -354,7 +354,10 @@ class Runner:
         endpoint = ""
         if port is not None:
             fixture_urls(port)
-            endpoint = f' (allow network-outbound (remote ip "127.0.0.1:{port}")) '
+            # Seatbelt accepts localhost, not a literal IPv4 host here. This
+            # scopes the OS exception to a loopback port (including IPv6).
+            # The dispatch guard separately pins literal 127.0.0.1 fixture URLs.
+            endpoint = f' (allow network-outbound (remote ip "localhost:{port}")) '
         profile.write_text('(version 1) (allow default) (deny network*) '
                            + endpoint + '(deny file-write*) (allow file-write* (subpath '
                            + json.dumps(str(temp)) + ') (literal "/dev/null"))')
@@ -593,6 +596,51 @@ def preserved(before: dict, after: dict) -> None:
         raise Failed("supported native path changed/dropped synthetic " + ", ".join(lost))
 
 
+def measure_git_cache(runner: Runner, home: Path, market: str, inventory: dict,
+                      source_url: str, expected_commit: str, publisher: Path) -> dict:
+    """Measure the owned native checkout independently of inventory metadata.
+
+    Threat boundary: never search upwards from an arbitrary inventory path or
+    follow a Git indirection file into another repository. A claimed URL alone
+    does not establish commit identity or package integrity.
+    """
+    provenance = inventory.get("marketplaceSource", {})
+    require(isinstance(provenance, dict) and provenance.get("sourceType") == "git"
+            and provenance.get("source") == source_url,
+            "native inventory Git source mismatch")
+    require(len(expected_commit) == 40 and all(c in "0123456789abcdef" for c in expected_commit),
+            "publisher commit must be a full Git SHA")
+    cache = owned(home / ".tmp/marketplaces" / market, home)
+    package = owned(cache / PACKAGE, home)
+    source = inventory.get("source", {})
+    require(isinstance(source, dict) and source.get("path") == str(package),
+            "native source path is not the owned marketplace package")
+    require(package.is_dir() and owned(cache / ".git", home).is_dir(),
+            "native marketplace Git root unavailable or indirect")
+
+    def git(*args):
+        return runner.run(["/usr/bin/git", "-C", str(cache), *args]).stdout.strip()
+
+    require(git("rev-parse", "--show-toplevel") == str(cache),
+            "native marketplace Git root mismatch")
+    origin = git("config", "--get", "remote.origin.url")
+    require(origin == source_url, "native cached marketplace origin mismatch")
+    resolved = git("rev-parse", "HEAD")
+    require(resolved == expected_commit, "native cached marketplace HEAD mismatch")
+    hashes = {}
+    for path in sorted((publisher / PACKAGE).rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(publisher / PACKAGE)
+            cached = owned(package / relative, home)
+            require(cached.is_file() and cached.read_bytes() == path.read_bytes(),
+                    "native marketplace package differs from publisher")
+            hashes[relative.as_posix()] = digest(path.read_bytes())
+    require(bool(hashes), "publisher package is empty")
+    return {"requested_ref": "main", "resolved_commit": resolved, "origin": origin,
+            "measurement_method": "owned native marketplace Git root: rev-parse --show-toplevel, config --get remote.origin.url, rev-parse HEAD; publisher package byte comparison",
+            "cache_root": str(cache.relative_to(home)), "package_hashes": hashes}
+
+
 def qualify(temp: Path, codex: Path, report: dict) -> None:
     with serve_git(temp) as port:
         qualify_fixture(temp, codex, report, port)
@@ -605,7 +653,7 @@ def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
     guard = write_guard(temp, codex, fixture_urls(port))
     runner = Runner(temp, env, report, port)
     runner.run(["/usr/bin/true"])
-    report["checks"]["containment"] = {"status": "PASS", "reason": "OS denies network except exact owned loopback endpoint and writes outside fixture"}
+    report["checks"]["containment"] = {"status": "PASS", "reason": "OS denies network except owned localhost loopback port (not IPv4-only) and writes outside fixture; dispatch pins exact literal 127.0.0.1 fixture URLs"}
     roots = source_fixture(runner, report)
     remotes = {}
     for market, publisher in roots.items():
@@ -706,11 +754,11 @@ def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
         refreshed = cli("add", f"codex-orchestration@{market}")
         require(refreshed.get("version") == expected and entry(market).get("version") == expected,
                 "post-upgrade add did not discover expected version")
-        provenance = entry(market).get("marketplaceSource", {})
-        require(provenance.get("sourceType") == "git" and provenance.get("source") == sources[market]
-                and provenance.get("ref") == "main" and provenance.get("resolvedRef") == resolved,
-                "native inventory Git source/ref/resolvedRef mismatch")
-        report.setdefault("git_provenance", {})[market] = provenance
+        inventory = entry(market)
+        measurement = measure_git_cache(runner, home_root, market, inventory,
+                                        sources[market], resolved, roots[market])
+        report.setdefault("git_provenance", {})[market] = inventory["marketplaceSource"]
+        report.setdefault("git_measurements", {})[market] = measurement
         installed[market] = owned(Path(refreshed["installedPath"]), home_root)
         require(installed[market].is_dir(), "refreshed installedPath missing")
         require(path != installed[market], "upgrade reused prior version cache root")
@@ -811,15 +859,30 @@ def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
     def move(old, new):
         cas({plugin_key(old): False,
              **{plugin_key(old, server): False for server in FABLE_SERVERS}})
-        remove(old)
-        cas({plugin_key(new, server): server == FABLE_SERVERS[0] for server in FABLE_SERVERS})
+        # Native remove deletes the whole plugin table, including unowned fields.
+        # Retain the inactive installation; re-add preserves its local settings.
         result = cli("add", f"codex-orchestration@{new}")
+        cas({plugin_key(new): True,
+             **{plugin_key(new, server): server == FABLE_SERVERS[0] for server in FABLE_SERVERS}})
         installed[new] = owned(Path(result["installedPath"]), home_root)
         require(installed[new].is_dir(), "native re-add installedPath unavailable")
         inventory = entry(new)
         require(inventory.get("version") == ("0.9.5" if new == CANDIDATE else "0.9.4")
                 and inventory.get("marketplaceSource") == report["git_provenance"][new],
                 "native re-add changed fixture version or Git provenance")
+        measure_git_cache(runner, home_root, new, inventory, sources[new],
+                          report["git_measurements"][new]["resolved_commit"], roots[new])
+        for relative, expected_hash in report["fixture_package_hashes"][new].items():
+            cached = owned(installed[new] / relative, home_root)
+            require(cached.is_file() and digest(cached.read_bytes()) == expected_hash,
+                    "native re-add changed installed package bytes")
+        retained = cli("list").get("installed", [])
+        require(any(e.get("pluginId") == f"codex-orchestration@{old}"
+                    and e.get("enabled") is False for e in retained),
+                "inactive package was not retained disabled")
+        report.setdefault("transition_inventory", {})[new] = [
+            {"plugin_id": e.get("pluginId"), "enabled": e.get("enabled")}
+            for e in retained]
         result = routing(new, "--status", "--require-effective")
         require("Native policy: installed and effective" in result.stdout,
                 "moved registered namespace is not effective")
@@ -835,16 +898,29 @@ def qualify_fixture(temp: Path, codex: Path, report: dict, port: int) -> None:
     check(report, "rollback", rollback)
     report["snapshots"]["after_rollback"] = snapshot(home)
     check(report, "rollback_preservation", lambda: preserved(before, snapshot(home)))
+    report["transition_semantics"] = "migration and rollback retain both installed packages, with inactive distribution and its Fable launchers disabled; unowned settings preserved; no claim of byte-exact package-inventory rollback"
 
     def cleanup():
+        prior = snapshot(home)
         for market in (CANDIDATE, UPSTREAM):
-            # Remove candidate only if rollback did not already remove it.
+            # Destructive disposable cleanup only, after preservation snapshots.
             entries = cli("list").get("installed", [])
             if any(e.get("pluginId") == f"codex-orchestration@{market}" for e in entries):
                 disable(market)
                 remove(market)
             cli("marketplace", "remove", market)
         require(not cli("list").get("installed"), "native removal left installed fixtures")
+        after = snapshot(home)
+        try:
+            preserved(prior, after)
+        except Failed as exc:
+            require("unowned" in str(exc), "remove control did not measure unowned-settings loss")
+            report["remove_negative_control"] = {
+                "classification": "DESTRUCTIVE_DISPOSABLE_CLEANUP_NEGATIVE",
+                "before": prior, "after": after, "preservation": "FAIL",
+                "reason": str(exc)}
+        else:
+            raise Blocked("remove control did not measure plugin-local unowned-settings loss")
     check(report, "cleanup_primitives", cleanup)
 
 
