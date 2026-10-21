@@ -18,6 +18,20 @@ from unittest import mock
 from scripts import fork_migration_probe as probe
 
 
+def pinned_source(name):
+    """Require local baseline history; never substitute checkout bytes or fetch."""
+    result = subprocess.run(
+        ["/usr/bin/git", "-C", str(probe.ROOT), "show", f"{probe.BASELINE}:{name}"],
+        capture_output=True, check=False,
+    )
+    if result.returncode:
+        raise AssertionError(
+            f"Pinned fixture unavailable: {probe.BASELINE}:{name}; "
+            "local Git history must contain the probe baseline (no fallback or fetch)"
+        )
+    return result.stdout
+
+
 def encode_toml(config):
     """Test-only native config serialization; positive harness never writes TOML."""
     lines = []
@@ -506,12 +520,44 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(report["checks"]["no_model_calls"]["status"], "BLOCKED")
 
     def load_native(self):
-        directory = probe.ROOT / probe.PACKAGE / Path(probe.CONFIGURATOR).parent
-        with mock.patch.object(sys, "path", [str(directory), *sys.path]):
+        directory = Path(tempfile.mkdtemp(prefix="pinned-native-", dir=self.root))
+        source_directory = Path(probe.PACKAGE) / Path(probe.CONFIGURATOR).parent
+        for name in ("routing_state.py", "configure_native_routing.py"):
+            (directory / name).write_bytes(pinned_source((source_directory / name).as_posix()))
+        spec = importlib.util.spec_from_file_location("routing_state", directory / "routing_state.py")
+        routing_state = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(routing_state)
+        # A cached checkout validator must never satisfy this pinned import.
+        with mock.patch.dict(sys.modules, {"routing_state": routing_state}):
             spec = importlib.util.spec_from_file_location("probe_native_fixture", directory / "configure_native_routing.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
         return module
+
+    def test_native_fixture_imports_exact_pin_and_leaves_checkout_unchanged(self):
+        names = [(Path(probe.PACKAGE) / Path(probe.CONFIGURATOR).parent / name).as_posix()
+                 for name in ("configure_native_routing.py", "routing_state.py")]
+        checkout = {name: (probe.ROOT / name).read_bytes() for name in names}
+        with mock.patch.dict(sys.modules, {"routing_state": mock.Mock()}), \
+                mock.patch.object(subprocess, "Popen", wraps=subprocess.Popen) as popen:
+            native = self.load_native()
+        self.assertTrue(all(call.args[0][:4] == ["/usr/bin/git", "-C", str(probe.ROOT), "show"]
+                            for call in popen.call_args_list))
+        self.assertEqual(native.PLUGIN_ID, "codex-orchestration@" + probe.UPSTREAM)
+        fixture = Path(native.__file__)
+        validator = Path(native.validate_routing_state.__code__.co_filename)
+        self.assertTrue(fixture.is_relative_to(self.root))
+        self.assertEqual(validator.parent, fixture.parent)
+        for name, path in zip(names, (fixture, validator)):
+            self.assertEqual(path.read_bytes(), pinned_source(name))
+        self.assertEqual({name: (probe.ROOT / name).read_bytes() for name in names}, checkout)
+
+    def test_pinned_fixture_unavailable_fails_without_fallback(self):
+        with mock.patch.object(subprocess, "run", return_value=
+                               subprocess.CompletedProcess([], 128, b"", b"missing")) as run:
+            with self.assertRaisesRegex(AssertionError, "Pinned fixture unavailable: " + probe.BASELINE):
+                pinned_source(probe.PACKAGE + "/" + probe.CONFIGURATOR)
+        run.assert_called_once()
 
     def test_registered_fixture_is_valid_but_disable_does_not_preserve_extension(self):
         native = self.load_native()
@@ -864,7 +910,8 @@ class ProbeTests(unittest.TestCase):
         names = (probe.MARKET, probe.PACKAGE + "/.codex-plugin/plugin.json",
                  probe.PACKAGE + "/.mcp.json", probe.PACKAGE + "/" + probe.CONFIGURATOR,
                  probe.PACKAGE + "/skills/codex-orchestration/SKILL.md")
-        originals = {name: (probe.ROOT / name).read_bytes() for name in names}
+        checkout = {name: (probe.ROOT / name).read_bytes() for name in names}
+        originals = {name: pinned_source(name) for name in names}
         class ArchiveRunner:
             temp = self.root
             calls = []
@@ -891,7 +938,7 @@ class ProbeTests(unittest.TestCase):
                                   probe.PACKAGE + "/" + probe.CONFIGURATOR})
         self.assertIn("codex-orchestration@" + probe.CANDIDATE,
                       (roots[probe.CANDIDATE] / probe.PACKAGE / probe.CONFIGURATOR).read_text())
-        self.assertEqual({name: (probe.ROOT / name).read_bytes() for name in names}, originals)
+        self.assertEqual({name: (probe.ROOT / name).read_bytes() for name in names}, checkout)
         self.assertEqual(report["source_hashes"], {name: probe.digest(value) for name, value in originals.items()})
 
     def test_synthetic_source_archive_rejects_symlink(self):
