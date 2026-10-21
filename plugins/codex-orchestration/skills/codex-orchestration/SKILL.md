@@ -150,13 +150,17 @@ request to update only this plugin. It cannot be combined with setup, status,
 disable, seat settings, custom role operations, or task work. Resolve the absolute
 Codex binary used by the active host. First run `codex plugin list --json` and
 require exactly one enabled
-`codex-orchestration@codex-orchestration` entry whose marketplace source type is
-`git` and source is the canonical HTTPS GitHub repository. Refuse local, disabled,
+`codex-orchestration@insolvent-capital-codex-orchestration` entry whose marketplace source type is
+`git` and source is exactly `https://github.com/InsolventCapital/Codex-Orchestration.git`.
+This is the canonical Git marketplace `insolvent-capital-codex-orchestration`.
+Require the registered requested ref to be exactly `main`, using native marketplace
+registration metadata; missing ref evidence is a refusal, never an assumed default.
+Refuse source/ref drift and upstream or arbitrary fork URLs. Refuse local, disabled,
 missing, duplicate, or unexpected sources without mutation. Then run only:
 
 ```bash
-codex plugin marketplace upgrade codex-orchestration --json
-codex plugin add codex-orchestration@codex-orchestration --json
+codex plugin marketplace upgrade insolvent-capital-codex-orchestration --json
+codex plugin add codex-orchestration@insolvent-capital-codex-orchestration --json
 codex plugin list --json
 ```
 
@@ -165,7 +169,7 @@ manager own transport, process containment, cache writes, and installation. Do n
 wrap these commands in a custom downloader, Git client, script, or credential-bearing
 environment. Require the upgrade result to select only this marketplace with no
 errors, the add result to report a SemVer newer than or equal to the original, and
-the final inventory to retain the exact canonical source and enabled state at that
+the final inventory and registration to retain the exact canonical source, ref `main`, and enabled state at that
 version. Never run `plugin remove`, rewrite Codex config, read credentials, or
 inspect/touch routing, chats, or sessions. If a native command or post-check fails,
 report the exact phase as failed and do not claim rollback.
@@ -175,6 +179,23 @@ Desktop and start a new task. The current task keeps the already loaded skill
 instructions; no updater can replace those in place. If the plugin is installed
 from a local or noncanonical marketplace, stop and explain that automatic update
 is intentionally unavailable for that source.
+
+## Fork transition boundary
+
+This is an InsolventCapital-maintained fork of Cjbuilds upstream, not an official
+upstream release. Steady-state update does not migrate an upstream live profile.
+A separately authorized transition requires a qualified native CAS recipe, prior
+source/policy hashes, preserved saved routing state and hint bytes, personal
+Verifier paragraphs/receipt/registration, unowned settings, and tested rollback.
+Retain the inactive old package installed but disabled; native remove erases
+unowned plugin-local settings. Routing disable/setup loses personal Verifier
+extensions. Use native AppServer versioned CAS only on exact old/new plugin enabled
+and Fable-MCP enabled fields. No generic bypass or policy-field rewrite is allowed.
+Local fixture success is not real HTTPS or live profile qualification.
+The standalone personal Opus Verifier remains separate; never add a native Verifier
+field. Existing owner gates and the externally frozen original containment round5
+budget remain binding and are never reset by installation. Preserve separate
+Advisor8/10, exhausted readiness attempts, and blocked integration dispositions.
 
 ## External Model roles
 

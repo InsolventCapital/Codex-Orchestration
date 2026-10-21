@@ -167,6 +167,36 @@ Executor — GPT-5.6 Sol high: Activated
         self.assertIn("codex plugin add", SKILL)
         self.assertNotIn("codex plugin remove", SKILL)
 
+    def test_fork_source_provenance_and_transition_are_explicit(self) -> None:
+        for document in (SKILL, README, REFERENCE, RELEASE):
+            with self.subTest(document=document[:40]):
+                for required in (
+                    "codex-orchestration@insolvent-capital-codex-orchestration",
+                    "https://github.com/InsolventCapital/Codex-Orchestration.git",
+                    "ref `main`", "source/ref drift", "inactive old package",
+                    "source/policy hashes", "versioned CAS", "tested rollback",
+                    "hint bytes", "round5",
+                ):
+                    self.assertIn(required, " ".join(document.split()))
+                self.assertNotIn("codex plugin add codex-orchestration@codex-orchestration", document)
+                self.assertNotIn("codex plugin marketplace add Cjbuilds/", document)
+        for required in (
+            "missing ref evidence is a refusal", "exactly one enabled",
+            "Refuse local, disabled", "missing, duplicate, or unexpected sources",
+            "Refuse source/ref drift and upstream or arbitrary fork URLs",
+            "Never run `plugin remove`", "No generic bypass or policy-field rewrite",
+        ):
+            self.assertIn(required, SKILL)
+
+    def test_fork_security_reporting_does_not_invent_private_channel(self) -> None:
+        security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+        self.assertIn("reporting is currently disabled", security)
+        self.assertIn("obtain an established private channel", security)
+        self.assertIn("Do not post suspected vulnerabilities or sensitive reports publicly", security)
+        self.assertIn("https://github.com/Cjbuilds/Codex-Orchestration/security/advisories/new", security)
+        self.assertNotIn("https://github.com/InsolventCapital/Codex-Orchestration/security/advisories/new", security)
+        self.assertIn("## Fork distribution threat model", security)
+
     def test_codex_still_decides_when_to_delegate(self) -> None:
         self.assertIn("Codex decides whether a plan helps", SKILL)
         self.assertIn("force a spawn or fixed worker count", SKILL)

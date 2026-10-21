@@ -366,3 +366,23 @@ Never promise 65% fewer raw tokens, a fixed weekly saving, a universal monetary 
 - [OpenAI: Codex pricing and usage limits](https://learn.chatgpt.com/docs/pricing)
 - [Anthropic: Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
 - [Anthropic: Multi-agent research system](https://www.anthropic.com/engineering/multi-agent-research-system)
+
+## Fork distribution and personal policy preservation
+
+This InsolventCapital-maintained fork retains Cjbuilds upstream attribution and the
+MIT license. Its only steady-state package ID is
+`codex-orchestration@insolvent-capital-codex-orchestration`; the exact Git source is
+`https://github.com/InsolventCapital/Codex-Orchestration.git`, requested ref `main`.
+Local/unexpected sources, duplicates and source/ref drift must stop update.
+
+Upstream-to-fork transition is a separate authorized process, not ordinary update.
+Require prior source/policy hashes and a qualified native AppServer versioned CAS
+recipe with tested rollback. Change only exact old/new plugin enabled and Fable-MCP
+enabled fields. Preserve saved routing state, hint bytes, personal Verifier
+paragraphs, receipt and registration, and unowned settings. Retain the inactive old
+package installed but disabled; native removal erases unowned plugin-local settings,
+and routing disable/setup loses personal Verifier extensions. No generic bypass or
+policy-field rewrite is authorized. LOCAL_FIXTURE checks do not qualify real HTTPS
+or a live profile migration. The standalone personal Opus Verifier stays separate;
+there is no native Verifier field. Existing routes, policy markers, review gates and
+the externally frozen original containment round5 budget are not reset by install.

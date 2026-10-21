@@ -46,7 +46,7 @@ STATE_SCHEMA = 5
 ADVISOR_REVIEW_LIMIT = 8
 STATE_FILENAME = ".codex-orchestration-routing.json"
 PROBE_VALUE = "CODEX_ORCHESTRATION_CAPABILITY_PROBE"
-PLUGIN_ID = "codex-orchestration@codex-orchestration"
+PLUGIN_ID = "codex-orchestration@insolvent-capital-codex-orchestration"
 FABLE_DEFAULT_EFFORT = "high"
 FABLE_EFFORT_CHOICES = ("low", "medium", "high", "xhigh", "max")
 FABLE_EFFORT_ALIASES = {"ultra": "max"}
@@ -457,7 +457,7 @@ class AppServer:
                     "clientInfo": {
                         "name": "codex_orchestration_installer",
                         "title": "Codex Orchestration Installer",
-                        "version": "0.9.4",
+                        "version": "0.9.5",
                     },
                     "capabilities": {"experimentalApi": True},
                 },

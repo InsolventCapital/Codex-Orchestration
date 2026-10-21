@@ -1,5 +1,15 @@
 # Codex Orchestration
 
+This is the **InsolventCapital-maintained fork** of
+[Cjbuilds/Codex-Orchestration](https://github.com/Cjbuilds/Codex-Orchestration),
+not an official upstream release. Original author and ownership attribution:
+CJ Zafir (@Cjbuilds); the original MIT license and copyright in LICENSE are preserved.
+Fork maintenance and review ownership: @InsolventCapital.
+
+The source candidate is **0.9.5 — Unreleased**, with future tag `v0.9.5`.
+Source changes require fresh exact-head review and verification; they do not
+install this fork or qualify a live profile.
+
 Bring models like Claude Fable 5 and Claude Opus 5 into Codex, give each model a role, and let Codex coordinate the work.
 
 ## What is it?
@@ -63,9 +73,12 @@ Results depend on the models, task, context, retries, and available parallel wor
 
 ## Install
 
+These commands are for a separately authorized fresh installation. An existing
+upstream installation requires the transition procedure below first.
+
 ```bash
-codex plugin marketplace add Cjbuilds/Codex-Orchestration
-codex plugin add codex-orchestration@codex-orchestration
+codex plugin marketplace add https://github.com/InsolventCapital/Codex-Orchestration.git --ref main
+codex plugin add codex-orchestration@insolvent-capital-codex-orchestration
 ```
 
 Start a new Codex task after installation. Setup requires Python 3.11 or newer.
@@ -303,11 +316,11 @@ status reports `first-party login ready`, the login is healthy and the already
 loaded MCP bridge is stale. Fully quit and reopen Codex, then start a new task; do
 not re-authenticate solely for that stale-bridge condition.
 
-To move from version 0.6.x or older to 0.7.0, run the native Codex commands once:
+For an already qualified fork installation, native steady-state update commands are:
 
 ```bash
-codex plugin marketplace upgrade codex-orchestration
-codex plugin add codex-orchestration@codex-orchestration
+codex plugin marketplace upgrade insolvent-capital-codex-orchestration
+codex plugin add codex-orchestration@insolvent-capital-codex-orchestration
 ```
 
 Version **0.6.0 or newer** is required for External Model roles; version **0.7.0
@@ -319,11 +332,49 @@ Model roles; version **0.9.0 or newer** adds Claude Opus 5 subscription routing.
 Confirm with
 `codex plugin list --json`, then restart Codex Desktop and start a new task.
 
-If the version stays old or `marketplaceSource.sourceType` is `local`, Codex is pointed at a local checkout rather than the GitHub marketplace. Enter the prompt `$codex-orchestration:codex-orchestration disable` first if a saved policy is active, then remove the plugin and that marketplace registration, add `Cjbuilds/Codex-Orchestration` again, and reinstall. This does not delete the local source checkout.
+Before any steady-state update, require exactly one enabled fork plugin:
+`codex-orchestration@insolvent-capital-codex-orchestration`, marketplace
+`insolvent-capital-codex-orchestration`, `marketplaceSource.sourceType` equal to
+`git`, exact source `https://github.com/InsolventCapital/Codex-Orchestration.git`,
+and registered requested ref `main`. Verify that ref from native marketplace
+registration metadata; if it is unavailable, stop. Refuse local/unexpected source,
+duplicates, disabled entries, or source/ref drift before mutation and repeat the
+same checks after native upgrade/add. If `marketplaceSource.sourceType` is `local`
+or the version stays old, stop and diagnose; removal/setup is not a migration fix.
+
+### Separate upstream-to-fork transition
+
+Transition requires separate owner authorization and a qualified native CAS recipe.
+The local fixture probe qualifies only LOCAL_FIXTURE behavior, not real HTTPS or a
+live profile migration. Record prior source/policy hashes, saved routing state and
+hint bytes, personal Verifier paragraphs, receipt and registration, and unowned
+plugin-local settings before any future transition. Qualify clean-profile upgrade,
+restore and tested rollback first. Retain the inactive old package installed but
+disabled: native remove erases unowned plugin-local settings. Routing disable/setup
+also loses personal Verifier extensions; do not use it for namespace transfer.
+
+Use only native AppServer versioned CAS on the exact old/new plugin enabled and
+Fable-MCP enabled fields, preserving saved routing state, hint bytes, personal
+Verifier receipt and registration, and all unowned fields. Reject unexpected
+source/policy hashes, stale versions, unrelated drift, and ambiguous inventory;
+preserve concurrent edits and stop on failure. No generic migration bypass or
+policy-field rewrite is authorized. A source update does not migrate the current
+live user automatically. See RELEASE.md for the future qualification gates.
+
+The standalone personal Opus Verifier remains separate; no native Verifier field
+is added. Existing policy markers, default routes and review gates remain binding.
+The original containment round5 budget remains externally frozen; installation
+never resets it or the separate Advisor8/10, exhausted readiness attempts, or
+blocked integration dispositions.
 
 Before downgrading to a version older than the currently saved routing schema, enter the prompt `$codex-orchestration:codex-orchestration disable` with the current version first.
 
 ## Uninstall
+
+This is destructive removal after separate authorization, never a transition
+step. Native removal erases unowned plugin-local settings; retain the inactive
+old package during namespace transition. Preserve personal Verifier extensions
+and user-owned settings before any separately authorized cleanup.
 
 First enter this prompt in Codex:
 
@@ -334,8 +385,8 @@ $codex-orchestration:codex-orchestration disable
 Then remove the plugin:
 
 ```bash
-codex plugin remove codex-orchestration@codex-orchestration
-codex plugin marketplace remove codex-orchestration
+codex plugin remove codex-orchestration@insolvent-capital-codex-orchestration
+codex plugin marketplace remove insolvent-capital-codex-orchestration
 ```
 
 Review and remove any user-owned custom roles separately.
