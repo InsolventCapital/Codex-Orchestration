@@ -6,14 +6,18 @@ Security fixes are made on the latest released version. Upgrade before reporting
 
 ## Report a vulnerability
 
-Do not open a public issue for a suspected vulnerability. Use [GitHub private vulnerability reporting](https://github.com/Cjbuilds/Codex-Orchestration/security/advisories/new) and include:
+Do not post suspected vulnerabilities or sensitive reports publicly. Private
+vulnerability reporting is currently disabled on the InsolventCapital fork.
+For fork-specific sensitive reports, obtain an established private channel from the
+fork maintainer before sending details; no private fork reporting channel or email
+is advertised here.
 
-- the affected version and Codex client version;
-- operating system and installation scope;
-- a minimal reproduction;
-- the security impact and any known workaround.
-
-Do not include credentials, tokens, or private configuration. You should receive an acknowledgement within seven days. A coordinated disclosure date will be agreed after the impact and fix are verified.
+For inherited upstream issues, follow [Cjbuilds upstream private disclosure
+guidance](https://github.com/Cjbuilds/Codex-Orchestration/security/advisories/new).
+Include the affected version and Codex client version, operating system and
+installation scope, a minimal reproduction, security impact and known workaround.
+Do not include credentials, tokens, or private configuration. Upstream disclosure
+arrangements do not establish a private reporting channel for this fork.
 
 ## Security boundaries
 
@@ -24,7 +28,11 @@ or `model_provider`, never edits OpenAI authentication, and never reads, migrate
 or deletes chat/session storage.
 
 The explicit update control first requires exactly one enabled installed plugin with
-the canonical HTTPS Git marketplace identity. It then delegates refresh, transport,
+the fork identity `codex-orchestration@insolvent-capital-codex-orchestration`,
+marketplace `insolvent-capital-codex-orchestration`, `sourceType` equal to `git`,
+exact source `https://github.com/InsolventCapital/Codex-Orchestration.git` and
+registered requested ref `main`. Missing provenance, duplicates and source/ref
+drift fail closed. It then delegates refresh, transport,
 process containment, cache mutation, and installation exclusively to Codex's native
 `plugin marketplace upgrade` and `plugin add` commands, followed by a strict native
 inventory check for canonical source, nondecreasing SemVer, and retained enabled
@@ -110,3 +118,25 @@ provider endpoints are trusted dependencies. The plugin does not weaken sandbox 
 approval settings and cannot guarantee that policy-guided delegation is
 engine-enforced. See the README and External Models reference for the operational
 contract.
+
+## Fork distribution threat model
+
+Assets are the exact reviewed repository/head, package provenance, saved policy,
+personal Verifier extensions/receipt/registration, and unowned plugin settings.
+Threats include upstream or arbitrary repository attestation replay, local-source
+substitution, duplicate namespace discovery, source/ref drift, and destructive
+remove/setup during namespace transfer. Mitigations are exact repository matching
+in event and attestation, strict source/ref checks before and after native update,
+negative/malformed regression tests, and fresh exact-head review. No caller-selected
+repository or generic migration bypass is accepted.
+
+Any future namespace transfer requires separate owner authority, prior source/policy
+hashes, qualified native AppServer versioned CAS only on exact old/new plugin enabled
+and Fable-MCP enabled fields, and tested rollback. Preserve saved routing state,
+hint bytes, personal Verifier paragraphs, receipt and registration, and all unowned
+fields. Retain the inactive old package installed but disabled: native removal erases
+unowned plugin-local settings, and routing disable/setup loses personal Verifier
+extensions. LOCAL_FIXTURE coverage proves neither real HTTPS nor live migration.
+The standalone personal Opus Verifier and existing policy/review gates remain
+unchanged. Preserve each user's applicable task-local review budgets and owner
+authorization gates; installation never resets or replenishes them.

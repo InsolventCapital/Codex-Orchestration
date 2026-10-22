@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
 from scripts import preflight
+from tests import plugin_lifecycle_smoke as lifecycle
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +45,7 @@ class PackagingTests(unittest.TestCase):
         )
         self.assertEqual(attestation["schema"], 1)
         self.assertIn(attestation["risk_tier"], {"docs", "behavior", "security-state"})
-        self.assertEqual(attestation["repository"], "Cjbuilds/Codex-Orchestration")
+        self.assertEqual(attestation["repository"], "InsolventCapital/Codex-Orchestration")
         self.assertEqual(attestation["base_branch"], "main")
         self.assertRegex(attestation["reviewed_head_sha"], r"^[0-9a-f]{40}$")
         self.assertIsInstance(attestation["negative_test_evidence"], list)
@@ -255,18 +257,56 @@ class PackagingTests(unittest.TestCase):
 
         self.assertEqual(manifest["name"], "codex-orchestration")
         self.assertEqual(manifest["skills"], "./skills/")
-        self.assertEqual(manifest["version"], "0.9.3")
+        self.assertEqual(manifest["version"], "0.9.5")
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
         self.assertRegex(
             manifest["version"],
             r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$",
         )
-        self.assertEqual(marketplace["name"], "codex-orchestration")
+        self.assertEqual(marketplace["name"], "insolvent-capital-codex-orchestration")
         self.assertEqual(len(marketplace["plugins"]), 1)
         entry = marketplace["plugins"][0]
         self.assertEqual(entry["name"], "codex-orchestration")
         self.assertEqual(entry["source"]["path"], "./plugins/codex-orchestration")
         self.assertRegex(skill, r"(?m)^name: codex-orchestration$")
+
+    def test_fork_identity_preserves_upstream_credit_and_ownership(self) -> None:
+        manifest = json.loads((PLUGIN_ROOT / ".codex-plugin/plugin.json").read_text())
+        self.assertEqual(manifest["repository"], "https://github.com/InsolventCapital/Codex-Orchestration.git")
+        self.assertEqual(manifest["homepage"], "https://github.com/InsolventCapital/Codex-Orchestration#readme")
+        self.assertEqual(manifest["interface"]["websiteURL"], "https://github.com/InsolventCapital/Codex-Orchestration")
+        self.assertEqual(manifest["author"], {"name": "CJ Zafir", "url": "https://github.com/Cjbuilds"})
+        self.assertEqual(manifest["interface"]["developerName"], "CJ Zafir")
+        self.assertEqual(manifest["license"], "MIT")
+        self.assertIn("InsolventCapital-maintained fork", manifest["description"])
+        readme = (REPO_ROOT / "README.md").read_text()
+        self.assertIn("CJ Zafir (@Cjbuilds)", readme)
+        self.assertIn("not an official upstream release", readme)
+        codeowners = (REPO_ROOT / ".github/CODEOWNERS").read_text()
+        for line in codeowners.splitlines():
+            if line and not line.startswith("#"):
+                self.assertEqual(line.split()[1:], ["@InsolventCapital"])
+
+    def test_synthetic_old_fixture_changes_only_marketplace_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            publisher = Path(raw)
+            path = publisher / ".agents/plugins/marketplace.json"
+            path.parent.mkdir(parents=True)
+            original = {"name": "codex-orchestration", "interface": {"other": True},
+                        "plugins": [{"name": "codex-orchestration", "source": {"path": "./plugins/codex-orchestration"}}]}
+            path.write_text(json.dumps(original))
+            lifecycle.prepare_synthetic_fork_fixture(publisher)
+            fixture = json.loads(path.read_text())
+            self.assertEqual(fixture["name"], "insolvent-capital-codex-orchestration")
+            self.assertEqual(fixture["plugins"], original["plugins"])
+            self.assertTrue(fixture["interface"]["other"])
+            self.assertIn("not a published fork release", fixture["interface"]["displayName"])
+            with self.assertRaisesRegex(lifecycle.SmokeFailure, "upstream fixture namespace"):
+                lifecycle.prepare_synthetic_fork_fixture(publisher)
+        self.assertEqual(lifecycle.OLD_RELEASE, "a1d9c546665c3253cdcaa8fe5c0c060199a6126c")
+        self.assertEqual(lifecycle.OLD_VERSION, "0.5.0")
+        self.assertEqual(lifecycle.NEW_VERSION, "0.9.5")
+        self.assertEqual(lifecycle.PLUGIN_ID, "codex-orchestration@insolvent-capital-codex-orchestration")
 
     def test_native_and_custom_configurators_are_packaged(self) -> None:
         native = SKILL_ROOT / "scripts" / "configure_native_routing.py"
@@ -278,7 +318,7 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse((SKILL_ROOT / "scripts" / "update_plugin.py").exists())
         self.assertIn("config/batchWrite", native.read_text(encoding="utf-8"))
         self.assertIn('"--repair"', native.read_text(encoding="utf-8"))
-        self.assertIn('"version": "0.9.3"', native.read_text(encoding="utf-8"))
+        self.assertIn('"version": "0.9.5"', native.read_text(encoding="utf-8"))
         self.assertIn("validate_routing_state", routing_state.read_text(encoding="utf-8"))
         self.assertIn("Standalone custom agent", custom.read_text(encoding="utf-8"))
 
@@ -393,7 +433,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn(f"{invocation} --update", readme)
         self.assertIn("designer: GPT-5.6", readme)
         self.assertIn(
-            "codex plugin add codex-orchestration@codex-orchestration", readme
+            "codex plugin add codex-orchestration@insolvent-capital-codex-orchestration", readme
         )
 
         unreviewed_raw_cases = (
@@ -453,7 +493,7 @@ class PackagingTests(unittest.TestCase):
         self.assertIn("@openai/codex@0.144.1", workflow)
         smoke_text = smoke.read_text(encoding="utf-8")
         self.assertIn('OLD_VERSION = "0.5.0"', smoke_text)
-        self.assertIn('NEW_VERSION = "0.9.3"', smoke_text)
+        self.assertIn('NEW_VERSION = "0.9.5"', smoke_text)
         self.assertIn("old Advisor-only cache unexpectedly supports Planner", smoke_text)
         self.assertIn("Upgraded installed skill is missing Planner contract", smoke_text)
         self.assertIn("reused the Advisor-only 0.5.0 cache directory", smoke_text)

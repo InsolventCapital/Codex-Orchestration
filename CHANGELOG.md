@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.5 — Unreleased
+
+- Prepare the InsolventCapital-maintained fork distribution, retaining Cjbuilds
+  upstream author credit and MIT license. This is not an official upstream release.
+- Bind package commands and exact-head review attestations to the fork identity;
+  require exact Git source provenance for steady-state updates.
+- Document a separately authorized namespace transition that preserves personal
+  Verifier extensions and retains the inactive old package. No live migration,
+  installation, release, or reset of existing review budgets is performed.
+
+## 0.9.4 — Unreleased
+
+- Accept Fable's optional exact first-party provider, list cost basis, and
+  per-model canonical identity metadata, including the undated Haiku canonical
+  alias. Preserve numeric usage compatibility, required reviewed primary,
+  complete runtime model reporting, and the unchanged Opus primary-only policy.
+
 ## 0.9.3 — Unreleased
 
 - Raise the bounded Advisor approval loop from five to eight reviews while

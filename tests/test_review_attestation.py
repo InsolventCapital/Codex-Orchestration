@@ -38,7 +38,7 @@ def body(**updates: object) -> str:
     value: dict[str, object] = {
         "schema": 1,
         "risk_tier": "security-state",
-        "repository": "Cjbuilds/Codex-Orchestration",
+        "repository": "InsolventCapital/Codex-Orchestration",
         "base_branch": "main",
         "reviewed_head_sha": HEAD,
         "reviewer_identity": "Independent Reviewer",
@@ -75,7 +75,7 @@ def event(
     pr_body: str, *, head: str = HEAD, draft: bool = True
 ) -> dict[str, object]:
     return {
-        "repository": {"full_name": "Cjbuilds/Codex-Orchestration"},
+        "repository": {"full_name": "InsolventCapital/Codex-Orchestration"},
         "pull_request": {
             "body": pr_body,
             "draft": draft,
@@ -205,7 +205,7 @@ class ReviewAttestationTests(unittest.TestCase):
     def test_non_pr_event_needs_no_attestation(self) -> None:
         self.assertIsNone(
             ATTESTATION.validate_pull_request_event(
-                {"repository": {"full_name": "Cjbuilds/Codex-Orchestration"}},
+                {"repository": {"full_name": "InsolventCapital/Codex-Orchestration"}},
                 expected_base=BASE,
                 expected_head=HEAD,
                 changed_paths=["scripts/preflight.py"],
@@ -334,6 +334,24 @@ class ReviewAttestationTests(unittest.TestCase):
                         expected_base=BASE,
                         expected_head=HEAD,
                         changed_paths=["scripts/preflight.py"],
+                    )
+
+    def test_fork_repository_rejects_upstream_and_arbitrary_identity_in_both_layers(self) -> None:
+        for repository in ("Cjbuilds/Codex-Orchestration", "arbitrary/wrongrepo"):
+            with self.subTest(repository=repository, layer="event"):
+                value = event(body())
+                value["repository"] = {"full_name": repository}
+                with self.assertRaisesRegex(ATTESTATION.AttestationError, "event repository"):
+                    ATTESTATION.validate_pull_request_event(
+                        value, expected_base=BASE, expected_head=HEAD,
+                        changed_paths=["scripts/review_attestation.py"],
+                    )
+            with self.subTest(repository=repository, layer="attestation"):
+                with self.assertRaisesRegex(ATTESTATION.AttestationError, "attestation repository"):
+                    ATTESTATION.validate_pull_request_event(
+                        event(body(repository=repository)),
+                        expected_base=BASE, expected_head=HEAD,
+                        changed_paths=["scripts/review_attestation.py"],
                     )
 
     def test_exact_schema_and_repository_are_required(self) -> None:

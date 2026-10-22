@@ -1993,11 +1993,29 @@ class NativeRoutingTests(unittest.TestCase):
         self.assertIn("at most one bundled Claude subscription seat", result.stderr)
         self.assertFalse((self.home / NATIVE.STATE_FILENAME).exists())
 
+    def test_fable_launcher_paths_use_only_exact_fork_namespace(self) -> None:
+        self.assertEqual(
+            NATIVE.PLUGIN_ID,
+            "codex-orchestration@insolvent-capital-codex-orchestration",
+        )
+        for server in NATIVE.FABLE_SERVERS:
+            self.assertEqual(
+                NATIVE.fable_key_path(server),
+                'plugins."codex-orchestration@insolvent-capital-codex-orchestration".'
+                f'mcp_servers.{json.dumps(server)}.enabled',
+            )
+
     def test_fable_planner_with_gpt_advisor_uses_one_launcher_and_restores(self) -> None:
         initial = {
             "features": {"multi_agent_v2": {}},
             "plugins": {
+                "codex-orchestration@codex-orchestration": {
+                    "enabled": False,
+                    "unowned": {"keep": "upstream settings"},
+                    "mcp_servers": {"fable-advisor-python3": {"enabled": False}},
+                },
                 NATIVE.PLUGIN_ID: {
+                    "unowned": {"keep": "fork settings"},
                     "mcp_servers": {
                         "fable-advisor-python3": {"enabled": False},
                         "fable-advisor-python": {"enabled": True},
@@ -2025,6 +2043,15 @@ class NativeRoutingTests(unittest.TestCase):
         )
         self.assertEqual(state["planner"]["kind"], "fable")
         self.assertEqual(state["advisor"]["kind"], "model")
+        configured_plugins = self.read_fake_config()["plugins"]
+        self.assertEqual(
+            configured_plugins["codex-orchestration@codex-orchestration"],
+            initial["plugins"]["codex-orchestration@codex-orchestration"],
+        )
+        self.assertEqual(
+            configured_plugins[NATIVE.PLUGIN_ID]["unowned"],
+            initial["plugins"][NATIVE.PLUGIN_ID]["unowned"],
+        )
         managed_mcp = state["managed"]["mcp"]
         self.assertEqual(sum(value is True for value in managed_mcp.values()), 1)
         self.assertTrue(managed_mcp["fable-advisor-python3"])

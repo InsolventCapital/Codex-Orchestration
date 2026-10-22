@@ -2,11 +2,13 @@
 """Exercise a real Codex plugin install, Git upgrade, and both setup routes.
 
 A disposable bare Git marketplace is served over loopback HTTP. The real Codex
-CLI installs the affected Advisor-only 0.5.0 bundle, runs its documented
+CLI installs a synthetic fork-namespace fixture derived from the affected
+Advisor-only upstream 0.5.0 bundle, runs its documented
 marketplace-upgrade command after the current release is pushed to that Git
 remote, installs the refreshed package, verifies the new cache and routing
 contract, and runs native-policy plus custom-agent setup/status/cleanup in
-isolation.
+isolation. This fixture is not a published fork 0.5.0 release or an actual
+upstream-to-fork migration; fork_migration_probe.py covers namespace transfer.
 """
 
 from __future__ import annotations
@@ -28,11 +30,11 @@ from typing import Any, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = REPO_ROOT / "plugins" / "codex-orchestration"
-PLUGIN_ID = "codex-orchestration@codex-orchestration"
-MARKETPLACE_NAME = "codex-orchestration"
+PLUGIN_ID = "codex-orchestration@insolvent-capital-codex-orchestration"
+MARKETPLACE_NAME = "insolvent-capital-codex-orchestration"
 OLD_RELEASE = "a1d9c546665c3253cdcaa8fe5c0c060199a6126c"
 OLD_VERSION = "0.5.0"
-NEW_VERSION = "0.9.3"
+NEW_VERSION = "0.9.5"
 COMMAND_TIMEOUT_SECONDS = 60
 
 
@@ -190,6 +192,18 @@ def replace_publisher_source(publisher: Path) -> None:
     )
 
 
+def prepare_synthetic_fork_fixture(publisher: Path) -> None:
+    """Rename only the disposable old marketplace; retain old package behavior."""
+    path = publisher / ".agents" / "plugins" / "marketplace.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert_equal(value.get("name"), "codex-orchestration", "upstream fixture namespace")
+    value["name"] = MARKETPLACE_NAME
+    value.setdefault("interface", {})["displayName"] = (
+        "Synthetic fork-namespace old fixture (not a published fork release)"
+    )
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
 class QuietHandler(SimpleHTTPRequestHandler):
     def log_message(self, message_format: str, *args: object) -> None:
         pass
@@ -328,6 +342,15 @@ def main() -> int:
         )
         assert_equal(old_manifest.get("version"), OLD_VERSION, "old release fixture")
 
+        prepare_synthetic_fork_fixture(publisher)
+        run([git, "add", ".agents/plugins/marketplace.json"], cwd=publisher, env=env)
+        run(
+            [git, "commit", "--quiet", "-m", "Synthetic fork-namespace old fixture"],
+            cwd=publisher,
+            env=env,
+        )
+        old_fixture_commit = git_head(git, publisher, cwd=temp, env=env)
+
         run(
             [
                 git,
@@ -374,7 +397,7 @@ def main() -> int:
             marketplace_snapshot = Path(marketplace_add["installedRoot"]).resolve()
             assert_equal(
                 git_head(git, marketplace_snapshot, cwd=temp, env=env),
-                OLD_RELEASE,
+                old_fixture_commit,
                 "initial marketplace snapshot commit",
             )
 

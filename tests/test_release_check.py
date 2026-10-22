@@ -69,7 +69,13 @@ class TempRepository:
 
 class ReleaseCheckTests(unittest.TestCase):
     def test_checkout_release_metadata_is_consistent(self) -> None:
-        self.assertEqual(RELEASE.run_check(REPO_ROOT, require_tag=False), "0.9.3")
+        self.assertEqual(RELEASE.run_check(REPO_ROOT, require_tag=False), "0.9.5")
+
+    def test_fork_release_version_strictly_exceeds_repair(self) -> None:
+        self.assertGreater(RELEASE.compare_semver("0.9.5", "0.9.4"), 0)
+        changelog = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertEqual(changelog.splitlines()[2], "## 0.9.5 — Unreleased")
+        self.assertIn("future tag `v0.9.5`", (REPO_ROOT / "RELEASE.md").read_text())
 
     def test_unreleased_checkout_is_not_tag_ready(self) -> None:
         with self.assertRaisesRegex(RELEASE.ReleaseCheckError, "not tagged"):
