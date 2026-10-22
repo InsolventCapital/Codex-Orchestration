@@ -63,6 +63,10 @@ class FakeRunner:
 
     def run(self, args, **kwargs):
         self.calls.append(args)
+        if str(self.temp / "registration_read.py") in args:
+            config = tomllib.loads((Path(self.env["CODEX_HOME"]) / "config.toml").read_text())
+            registration = config.get("marketplaces", {}).get(args[-1])
+            return subprocess.CompletedProcess(args, 0, json.dumps(registration), "")
         if "--show-toplevel" in args:
             return subprocess.CompletedProcess(args, 0, args[args.index("-C") + 1] + "\n", "")
         if "remote.origin.url" in args:
@@ -135,6 +139,9 @@ class FakeRunner:
         config_file = Path(self.env["CODEX_HOME"]) / "config.toml"
         config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
         config.setdefault("plugins", {}).setdefault(plugin_id, {})["enabled"] = True
+        config.setdefault("marketplaces", {})[market] = {
+            "source_type": "git", "source": self.sources[market],
+            "ref": "main", "last_revision": "a" * 40}
         config_file.write_text(encode_toml(config))
         entry = {"marketplaceSource": {"sourceType": "git", "source": self.sources[market]},
                  "source": {"path": str(cache / probe.PACKAGE)},
@@ -670,6 +677,7 @@ class ProbeTests(unittest.TestCase):
             measured = report["git_measurements"][market]
             self.assertEqual(measured["requested_ref"], "main")
             self.assertEqual(measured["resolved_commit"], "a" * 40)
+            self.assertEqual(measured["native_registration"]["ref"], measured["requested_ref"])
             self.assertEqual(set(measured["package_hashes"]), {
                 ".codex-plugin/plugin.json", ".mcp.json",
                 "skills/codex-orchestration/SKILL.md", probe.CONFIGURATOR})
@@ -747,6 +755,72 @@ class ProbeTests(unittest.TestCase):
                     probe.measure_git_cache(runner, Path(env["CODEX_HOME"]), market,
                                             inventory, url, "a" * (7 if fault == "short_commit" else 40),
                                             roots[market])
+
+    def test_native_registration_missing_drift_and_malformed_refuse_measurement(self):
+        faults = {
+            "missing": None, "nonobject": [],
+            "missing_ref": {"ref": None}, "wrong_ref": {"ref": "other"},
+            "sha_as_ref": {"ref": "a" * 40}, "wrong_revision": {"last_revision": "b" * 40},
+            "short_revision": {"last_revision": "a" * 7},
+            "wrong_url": {"source": "https://wrong.invalid/fork.git"},
+            "wrong_type": {"source_type": "local"},
+        }
+        for fault, delta in faults.items():
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory(dir=self.root) as raw:
+                temp = Path(raw)
+                env = probe.child_env(temp)
+                runner = FakeRunner(temp, env, self.report())
+                roots = minimal_sources(runner, runner.report)
+                market = probe.UPSTREAM
+                url = probe.fixture_urls(43123)[0]
+                runner.sources[market] = url
+                inventory = runner.json(["guard", "plugin", "add", "codex-orchestration@" + market, "--json"])
+                config_file = Path(env["CODEX_HOME"]) / "config.toml"
+                config = tomllib.loads(config_file.read_text())
+                if delta is None:
+                    del config["marketplaces"][market]
+                elif isinstance(delta, dict):
+                    # TOML has no null; absent fields must fail, never default.
+                    for key, value in delta.items():
+                        if value is None:
+                            del config["marketplaces"][market][key]
+                        else:
+                            config["marketplaces"][market][key] = value
+                else:
+                    config["marketplaces"][market] = delta
+                config_file.write_text(encode_toml(config))
+                with self.assertRaises(probe.Blocked):
+                    probe.measure_git_cache(runner, Path(env["CODEX_HOME"]), market,
+                                            inventory, url, "a" * 40, roots[market])
+
+    def test_null_registration_revision_still_requires_independent_cache_head(self):
+        env = probe.child_env(self.root)
+        runner = FakeRunner(self.root, env, self.report())
+        roots = minimal_sources(runner, runner.report)
+        market = probe.UPSTREAM
+        url = probe.fixture_urls(43123)[0]
+        runner.sources[market] = url
+        inventory = runner.json(["guard", "plugin", "add", "codex-orchestration@" + market, "--json"])
+        config_file = Path(env["CODEX_HOME"]) / "config.toml"
+        config = tomllib.loads(config_file.read_text())
+        del config["marketplaces"][market]["last_revision"]
+        config_file.write_text(encode_toml(config))
+        result = probe.measure_git_cache(runner, Path(env["CODEX_HOME"]), market,
+                                         inventory, url, "a" * 40, roots[market])
+        self.assertEqual(result["resolved_commit"], "a" * 40)
+        self.assertIsNone(result["native_registration"].get("last_revision"))
+        original = runner.run
+
+        def wrong_head(args, **kwargs):
+            output = original(args, **kwargs)
+            if args[-2:] == ["rev-parse", "HEAD"]:
+                output.stdout = "b" * 40 + "\n"
+            return output
+
+        with mock.patch.object(runner, "run", side_effect=wrong_head), \
+                self.assertRaisesRegex(probe.Blocked, "HEAD mismatch"):
+            probe.measure_git_cache(runner, Path(env["CODEX_HOME"]), market,
+                                    inventory, url, "a" * 40, roots[market])
 
     def test_package_inventory_mutations_block_all_three_comparison_sites(self):
         original_json = FakeRunner.json

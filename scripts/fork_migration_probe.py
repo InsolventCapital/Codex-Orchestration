@@ -344,6 +344,29 @@ print(json.dumps({"status": "ok"}))
 '''
 
 
+# Read only the native registration; do not emit unrelated configuration.
+REGISTRATION_HELPER = r'''import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import configure_native_routing as native
+with native.AppServer(Path(sys.argv[2]), Path(sys.argv[3])) as app:
+    read = app.request("config/read", {"includeLayers": True, "cwd": str(Path.cwd())})
+    user, version = native._user_layer(read)
+    if not version:
+        raise RuntimeError("native user registration layer unavailable")
+    fields = ("source_type", "source", "ref", "last_revision")
+    def selected(config):
+        value = native.nested_get(config, "marketplaces", sys.argv[4])
+        if not isinstance(value, dict):
+            raise RuntimeError("native marketplace registration unavailable")
+        return {key: value.get(key) for key in fields}
+    registered = selected(user)
+    if selected(read.get("config", {})) != registered:
+        raise RuntimeError("effective marketplace differs from user registration")
+print(json.dumps(registered))
+'''
+
+
 class Runner:
     def __init__(self, temp: Path, env: dict[str, str], report: dict, port: int | None = None):
         self.temp, self.env, self.report = temp, env, report
@@ -648,6 +671,28 @@ def measure_git_cache(runner: Runner, home: Path, market: str, inventory: dict,
             "native inventory Git source mismatch")
     require(len(expected_commit) == 40 and all(c in "0123456789abcdef" for c in expected_commit),
             "publisher commit must be a full Git SHA")
+    helper = owned(runner.temp / "registration_read.py", runner.temp)
+    helper.write_text(REGISTRATION_HELPER)
+    result = runner.run([sys.executable, "-B", str(helper),
+                         str(publisher / PACKAGE / Path(CONFIGURATOR).parent),
+                         str(runner.temp / "bin/codex"), str(home), market])
+    try:
+        registration = json.loads(result.stdout)
+    except ValueError as exc:
+        raise Blocked("native registration returned malformed JSON") from exc
+    runner.report.setdefault("registration_readbacks", []).append({
+        "marketplace": market, "expected_revision": expected_commit,
+        "registration": registration,
+    })
+    require(isinstance(registration, dict)
+            and registration.get("source_type") == "git"
+            and registration.get("source") == source_url,
+            "native registered Git source mismatch")
+    require(registration.get("ref") == "main", "native registered requested ref mismatch")
+    # Native add/upgrade may leave this optional bookkeeping field null.
+    # The independently measured cache HEAD below is always required.
+    require(registration.get("last_revision") in (None, expected_commit),
+            "native registered revision mismatch")
     cache = owned(home / ".tmp/marketplaces" / market, home)
     package = owned(cache / PACKAGE, home)
     source = inventory.get("source", {})
@@ -667,8 +712,9 @@ def measure_git_cache(runner: Runner, home: Path, market: str, inventory: dict,
     require(resolved == expected_commit, "native cached marketplace HEAD mismatch")
     hashes = compare_package(publisher / PACKAGE, package, runner.temp,
                              "native marketplace package differs from publisher")
-    return {"requested_ref": "main", "resolved_commit": resolved, "origin": origin,
-            "measurement_method": "owned native marketplace Git root: rev-parse --show-toplevel, config --get remote.origin.url, rev-parse HEAD; complete publisher package inventory and byte comparison",
+    return {"requested_ref": registration["ref"], "resolved_commit": resolved, "origin": origin,
+            "native_registration": registration,
+            "measurement_method": "native config/read user and effective registration agreement; owned native marketplace Git root: rev-parse --show-toplevel, config --get remote.origin.url, rev-parse HEAD; complete publisher package inventory and byte comparison",
             "cache_root": str(cache.relative_to(home)), "package_hashes": hashes}
 
 

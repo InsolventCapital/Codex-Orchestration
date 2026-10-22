@@ -30,6 +30,20 @@ Keep the original author credit, MIT license and copyright unchanged.
 
 ## Separate transition qualification
 
+Measure the registered requested ref through native AppServer `config/read`
+with `includeLayers: true`: the user-layer and effective
+`marketplaces.<name>` values must agree on `source_type`, `source`, and `ref`.
+The expected source and `ref = "main"` must be explicit; inventory URL alone
+or the arguments passed to marketplace add are not readback evidence.
+The optional `last_revision` field can be null after native add/upgrade.
+Never use it as a substitute for the independently measured cache HEAD,
+origin, and complete package inventory/byte comparison; if populated, require
+it to agree with that exact expected commit. Preserve the filtered registration
+readback and any mismatch in the qualification report.
+The disposable probe exercises this measurement for both synthetic distributions
+and re-add transitions; its result remains `LOCAL_FIXTURE`, not HTTPS or Desktop
+qualification.
+
 Upstream-to-fork transition requires separate owner authorization, prior
 source/policy hashes, a qualified native CAS recipe, and tested rollback in a clean
 profile. Preserve personal Verifier paragraphs, receipt and registration, saved
